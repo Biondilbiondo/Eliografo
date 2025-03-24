@@ -1,0 +1,6 @@
+[submodule "lib/NTPClient"]
+	path = lib/NTPClient
+	url = https://github.com/taranais/NTPClient.git
+[submodule "lib/SolTrack"]
+	path = lib/SolTrack
+	url = https://github.com/MarcvdSluys/SolTrack-Arduino.git
