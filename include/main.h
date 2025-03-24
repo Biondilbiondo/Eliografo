@@ -21,9 +21,9 @@ void setup_ntp(void);
 void setup_rtc(void);
 
 void update_time_from_NTP(void);
-void get_time(int *year, int *month, int *day, int *hours, int *minutes, float *seconds);
-void get_time_RTC(int *year, int *month, int *day, int *hours, int *minutes, float *seconds);
-void get_time_NTP(int *year, int *month, int *day, int *hours, int *minutes, float *seconds);
+void get_time(uint16_t *year, uint8_t *month, uint8_t *day, uint8_t *hours, uint8_t *minutes, float *seconds);
+void get_time_RTC(uint16_t *year, uint8_t *month, uint8_t *day, uint8_t *hours, uint8_t *minutes, float *seconds);
+void get_time_NTP(uint16_t *year, uint8_t *month, uint8_t *day, uint8_t *hours, uint8_t *minutes, float *seconds);
 
 void serial_log();
 

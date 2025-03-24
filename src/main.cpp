@@ -4,6 +4,8 @@
 const char* ssid = WIFI_SSID;
 const char* password = WIFI_PASSWORD;
 
+uint32_t chip_id;
+
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP);
 bool NTP_ok = false;
@@ -22,8 +24,6 @@ void get_sun_vec(float, float,
                  float *);
 
 void setup_wifi(){
-    delay(1000);
-   
     WiFi.begin(ssid, password);
   
     Serial.println();
@@ -58,10 +58,15 @@ void setup() {
     mir[_x_] = mir[_y_] = mir[_z_] = 0.;
     ory[_x_] = ory[_y_] = ory[_z_] = 0.;
     
+    chip_id = ESP.getChipId();
+
     // Serial communication
     Serial.begin(9600);
 
-    // WiFi
+    delay(2000);
+
+    Serial.printf("CHIP ID: %012x\n", chip_id);
+
     setup_wifi();
     setup_ntp();
     setup_rtc();
@@ -73,7 +78,7 @@ void update_time_from_NTP(void){
     }
 }
 
-void get_time(int *year, int *month, int *day, int *hours, int *minutes, float *seconds){
+void get_time(uint16_t *year, uint8_t *month, uint8_t *day, uint8_t *hours, uint8_t *minutes, float *seconds){
     if(RTC_ok){
         get_time_RTC(year, month, day, hours, minutes, seconds);
         return;
@@ -92,7 +97,7 @@ void get_time(int *year, int *month, int *day, int *hours, int *minutes, float *
     *year = 1970;
 }
 
-void get_time_RTC(int *year, int *month, int *day, int *hours, int *minutes, float *seconds){
+void get_time_RTC(uint16_t *year, uint8_t *month, uint8_t *day, uint8_t *hours, uint8_t *minutes, float *seconds){
     *hours = rtc.getHour(true);
     *minutes = rtc.getMinute();
     *seconds = (float) rtc.getSecond() + (float) rtc.getMillis() / 1000.0;
@@ -101,7 +106,7 @@ void get_time_RTC(int *year, int *month, int *day, int *hours, int *minutes, flo
     *year = rtc.getYear();
 }
 
-void get_time_NTP(int *year, int *month, int *day, int *hours, int *minutes, float *seconds){
+void get_time_NTP(uint16_t *year, uint8_t *month, uint8_t *day, uint8_t *hours, uint8_t *minutes, float *seconds){
     static const uint8_t monthDays[]={31,28,31,30,31,30,31,31,30,31,30,31};
 
     *hours = timeClient.getHours();
@@ -138,7 +143,8 @@ void get_time_NTP(int *year, int *month, int *day, int *hours, int *minutes, flo
 }
 
 void loop() {
-    int year, month, day, hours, minutes;
+    uint16_t year;
+    uint8_t month, day, hours, minutes;
     float seconds; 
     char buf[256];
 
