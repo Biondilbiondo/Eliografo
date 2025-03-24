@@ -1,16 +1,4 @@
-#include <Arduino.h>
-// WiFi connection
-#include <ESP8266WiFi.h>
-// NTP
-#include <NTPClient.h>
-#include <WiFiUdp.h>
-// SolTrack
-#include <SolTrack.h>
-
-#define _x_ 0
-#define _y_ 1
-#define _z_ 2
-
+#include "main.h"
 #include "configs.h"
 
 const char* ssid = WIFI_SSID;
@@ -18,6 +6,10 @@ const char* password = WIFI_PASSWORD;
 
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP);
+bool NTP_ok = false;
+
+ESP32Time rtc;
+bool RTC_ok = false;
 
 float sun[3];
 float mir[3];
@@ -49,7 +41,15 @@ void setup_wifi(){
 
 void setup_ntp(void){
     timeClient.begin();
-    timeClient.setTimeOffset(3600 * UTC_OFFSET);
+    NTP_ok = true;
+}
+
+void setup_rtc(void){
+    if(NTP_ok){
+        update_time_from_NTP();
+        rtc.setTime(timeClient.getEpochTime());
+        RTC_ok = true;
+    }
 }
 
 void setup() {
@@ -64,12 +64,41 @@ void setup() {
     // WiFi
     setup_wifi();
     setup_ntp();
+    setup_rtc();
 }
 
 void update_time_from_NTP(void){
     while(!timeClient.update()) {
         timeClient.forceUpdate();
     }
+}
+
+void get_time(int *year, int *month, int *day, int *hours, int *minutes, float *seconds){
+    if(RTC_ok){
+        get_time_RTC(year, month, day, hours, minutes, seconds);
+        return;
+    }
+
+    if(NTP_ok){
+        get_time_RTC(year, month, day, hours, minutes, seconds);
+        return;
+    }
+
+    *hours = 0;
+    *minutes = 0;
+    *seconds = 0.;
+    *day = 1;
+    *month = 1;
+    *year = 1970;
+}
+
+void get_time_RTC(int *year, int *month, int *day, int *hours, int *minutes, float *seconds){
+    *hours = rtc.getHour(true);
+    *minutes = rtc.getMinute();
+    *seconds = (float) rtc.getSecond() + (float) rtc.getMillis() / 1000.0;
+    *day = rtc.getDay();
+    *month = rtc.getMonth() + 1;
+    *year = rtc.getYear();
 }
 
 void get_time_NTP(int *year, int *month, int *day, int *hours, int *minutes, float *seconds){
@@ -105,13 +134,17 @@ void get_time_NTP(int *year, int *month, int *day, int *hours, int *minutes, flo
     // Gennuary is one
     (*month)++;
     // First day of a month is one
-    (*day)++;
+    (*day) = rawTime + 1;
 }
 
 void loop() {
     int year, month, day, hours, minutes;
     float seconds; 
-    get_time_NTP(&year, &month, &day, &hours, &minutes, &seconds);
+    char buf[256];
+
+    get_time(&year, &month, &day, &hours, &minutes, &seconds);
+    sprintf(buf, "%d-%d-%d %d:%d:%.1f UTC\n", year, month, day, hours, minutes, seconds);
+    Serial.println(buf);
     get_sun_vec(GEO_LON, GEO_LAT, year, month, day, hours, minutes, seconds, sun);
     serial_log();
     delay(1000); // Wait for 1 second
@@ -169,10 +202,10 @@ void get_sun_vec(float lon, float lat,
     time.minute = min;
     time.second = sec;
 
-    loc.longitude   = lon;  // HAN University of applied sciences, Arnhem, The Netherlands
+    loc.longitude   = lon;
     loc.latitude    = lat;
-    loc.pressure    = ATM_PRESSURE;      // Atmospheric pressure in kPa
-    loc.temperature = ATM_TEMPERATURE;      // Atmospheric temperature in K
+    loc.pressure    = ATM_PRESSURE;
+    loc.temperature = ATM_TEMPERATURE;
         
     // Compute Sun position:
     struct STPosition pos;
@@ -180,29 +213,14 @@ void get_sun_vec(float lon, float lat,
 
     float alt = pos.altitudeRefract / R2D,
           az  = pos.azimuthRefract / R2D;
+
+    /*char buf[256];
+    sprintf(buf, "Sun Azimut: %.5f", pos.azimuthRefract);
+    Serial.println(buf);
+    sprintf(buf, "Sun Altit : %.5f", pos.altitudeRefract);
+    Serial.println(buf);*/
       
     sun[_x_] = cos(PI/2.0 - az) * cos(alt);
     sun[_y_] = sin(PI/2.0 - az) * cos(alt);
     sun[_z_] = sin(alt);
 }
-
-/*int main(int argc, char **argv){
-
-    float sun[3];
-    float mir[] = {0.09925833, -0.99258333,  0.07018624};
-    float out[3], in[3], mir2[3]; 
-    
-    get_sun_vec(10.4036, 43.70853, 2025, 3, 14, 12, 0, 0, sun);
-    
-    for(int  i=0; i < 3; i++)
-        in[i] = -sun[i];
-
-    get_reflection_vec(in, mir, out);
-    get_normal_vec(in, out, mir2);
-
-    printf("Sun:       \t%8.4f %8.4f %8.4f\n", sun[_x_], sun[_y_], sun[_z_]);
-    printf("Mirror:    \t%8.4f %8.4f %8.4f\n", mir[_x_], mir[_y_], mir[_z_]);
-    printf("Reflection:\t%8.4f %8.4f %8.4f\n", out[_x_], out[_y_], out[_z_]);
-    printf("Mirror2:   \t%8.4f %8.4f %8.4f\n", mir2[_x_], mir2[_y_], mir2[_z_]);
-
-}*/
