@@ -171,8 +171,8 @@ void get_sun_vec(float lon, float lat,
 
     loc.longitude   = lon;  // HAN University of applied sciences, Arnhem, The Netherlands
     loc.latitude    = lat;
-    loc.pressure    = 101.0;      // Atmospheric pressure in kPa
-    loc.temperature = 283.0;      // Atmospheric temperature in K
+    loc.pressure    = ATM_PRESSURE;      // Atmospheric pressure in kPa
+    loc.temperature = ATM_TEMPERATURE;      // Atmospheric temperature in K
         
     // Compute Sun position:
     struct STPosition pos;
