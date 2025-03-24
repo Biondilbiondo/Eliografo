@@ -1,6 +1,11 @@
 #include <Arduino.h>
+// WiFi connection
 #include <ESP8266WiFi.h>
+// NTP
 #include <NTPClient.h>
+#include <WiFiUdp.h>
+// SolTrack
+#include <SolTrack.h>
 
 #define _x_ 0
 #define _y_ 1
@@ -11,7 +16,8 @@
 const char* ssid = WIFI_SSID;
 const char* password = WIFI_PASSWORD;
 
-
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP);
 
 float sun[3];
 float mir[3];
@@ -19,6 +25,9 @@ float ory[3];
 
 void serial_log(void);
 void get_reflection_vec(float *, float *, float *);
+void get_sun_vec(float, float, 
+                 int, int, int, int, int, float, 
+                 float *);
 
 void setup_wifi(){
     delay(1000);
@@ -38,6 +47,11 @@ void setup_wifi(){
     Serial.println(WiFi.localIP());
 }
 
+void setup_ntp(void){
+    timeClient.begin();
+    timeClient.setTimeOffset(3600 * UTC_OFFSET);
+}
+
 void setup() {
     // Global arrays initialization
     sun[_x_] = sun[_y_] = sun[_z_] = 0.;
@@ -49,11 +63,20 @@ void setup() {
 
     // WiFi
     setup_wifi();
+    setup_ntp();
+}
+
+void update_time_from_NTP(void){
+    while(!timeClient.update()) {
+        timeClient.forceUpdate();
+    }
 }
 
 void loop() {
-  serial_log();
-  delay(1000); // Wait for 1 second
+    update_time_from_NTP();
+    get_sun_vec(GEO_LON, GEO_LAT, 2025, 3, 14, 12, 0, 0, sun);
+    serial_log();
+    delay(1000); // Wait for 1 second
 }
 
 void serial_log(){
@@ -64,6 +87,12 @@ void serial_log(){
     Serial.println(buf);
     sprintf(buf, "OUT RAY  : [%.4f %.4f %.4f]", sun[_x_], sun[_y_], sun[_z_]);
     Serial.println(buf);
+
+    while(!timeClient.update()) {
+        timeClient.forceUpdate();
+    }
+    String outs = timeClient.getFormattedDate();
+    Serial.println(outs);
 }
 
 void get_reflection_vec(float *in, float *mir, float *out){
@@ -87,7 +116,7 @@ void get_normal_vec(float *in, float *out, float *mir){
         mir[i] = (in[i] - out[i])/norm; 
 }
 
-/*void get_sun_vec(float lon, float lat, 
+void get_sun_vec(float lon, float lat, 
                  int yr, int month, int day, int hour, int min, float sec, 
                  float *sun){         
     int useDegrees = 1;             // Input (geographic position) and output are in degrees
@@ -120,7 +149,7 @@ void get_normal_vec(float *in, float *out, float *mir){
     sun[_x_] = cos(PI/2.0 - az) * cos(alt);
     sun[_y_] = sin(PI/2.0 - az) * cos(alt);
     sun[_z_] = sin(alt);
-}*/
+}
 
 /*int main(int argc, char **argv){
 
