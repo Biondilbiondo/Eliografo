@@ -1,9 +1,15 @@
 [submodule "lib/NTPClient"]
 	path = lib/NTPClient
 	url = https://github.com/taranais/NTPClient.git
-[submodule "lib/SolTrack"]
-	path = lib/SolTrack
-	url = https://github.com/Biondilbiondo/SolTrack-Arduino.git
 [submodule "lib/ESP32Time"]
 	path = lib/ESP32Time
 	url = https://github.com/fbiego/ESP32Time.git
+[submodule "lib/Adafruit_MPU5060"]
+	path = lib/Adafruit_MPU5060
+	url = https://github.com/adafruit/Adafruit_MPU6050.git
+[submodule "lib/Adafruit_Sensor"]
+	path = lib/Adafruit_Sensor
+	url = https://github.com/adafruit/Adafruit_Sensor.git
+[submodule "lib/Adafruit_BusIO"]
+	path = lib/Adafruit_BusIO
+	url = https://github.com/adafruit/Adafruit_BusIO.git
