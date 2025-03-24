@@ -1,5 +1,6 @@
 #include "main.h"
 #include "configs.h"
+#include "pins.h"
 
 const char* ssid = WIFI_SSID;
 const char* password = WIFI_PASSWORD;
@@ -13,15 +14,27 @@ bool NTP_ok = false;
 ESP32Time rtc;
 bool RTC_ok = false;
 
+Adafruit_MPU6050 mpu;
+
+
 float sun[3];
 float mir[3];
 float ory[3];
 
-void serial_log(void);
-void get_reflection_vec(float *, float *, float *);
-void get_sun_vec(float, float, 
-                 int, int, int, int, int, float, 
-                 float *);
+void setup_i2c(void){
+    return;
+}
+
+void setup_accell_compass(void){
+    if (!mpu.begin()) {
+        Serial.println("Failed to find MPU6050 chip");
+        while (1) {
+        delay(10);
+        }
+    }
+    Serial.println("MPU6050 Found!");
+    
+}
 
 void setup_wifi(){
     WiFi.begin(ssid, password);

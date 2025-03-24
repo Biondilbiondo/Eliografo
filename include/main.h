@@ -11,6 +11,10 @@
 // Math Lib
 #include <math.h>
 
+#include <Adafruit_MPU6050.h>
+#include <Adafruit_Sensor.h>
+#include <Wire.h>
+
 #define _x_ 0
 #define _y_ 1
 #define _z_ 2
