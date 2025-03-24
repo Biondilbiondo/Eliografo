@@ -72,9 +72,47 @@ void update_time_from_NTP(void){
     }
 }
 
+void get_time_NTP(int *year, int *month, int *day, int *hours, int *minutes, float *seconds){
+    static const uint8_t monthDays[]={31,28,31,30,31,30,31,31,30,31,30,31};
+
+    *hours = timeClient.getHours();
+    *minutes = timeClient.getMinutes();
+    *seconds = (float) timeClient.getSeconds();
+    
+    // Now compute days years and months
+    unsigned long epoch = timeClient.getEpochTime();
+    unsigned long rawTime = epoch / 86400L;  // in days
+
+    *day = 0;
+    *year = 1970;
+
+    while((*day += (LEAP_YEAR(*year) ? 366 : 365)) <= rawTime)
+      (*year)++;
+    rawTime -= *day - (LEAP_YEAR(*year) ? 366 : 365); // now it is days in this year, starting at 0
+    *day = 0;
+    for(*month=0; *month<12; (*month)++) {
+      uint8_t monthLength;
+      if(*month == 1){ // february
+        monthLength = LEAP_YEAR(*year) ? 29 : 28;
+      } 
+      else{
+        monthLength = monthDays[*month];
+      }
+      if(rawTime < monthLength) 
+          break;
+      rawTime -= monthLength;
+    }
+    // Gennuary is one
+    (*month)++;
+    // First day of a month is one
+    (*day)++;
+}
+
 void loop() {
-    update_time_from_NTP();
-    get_sun_vec(GEO_LON, GEO_LAT, 2025, 3, 14, 12, 0, 0, sun);
+    int year, month, day, hours, minutes;
+    float seconds; 
+    get_time_NTP(&year, &month, &day, &hours, &minutes, &seconds);
+    get_sun_vec(GEO_LON, GEO_LAT, year, month, day, hours, minutes, seconds, sun);
     serial_log();
     delay(1000); // Wait for 1 second
 }
@@ -88,9 +126,6 @@ void serial_log(){
     sprintf(buf, "OUT RAY  : [%.4f %.4f %.4f]", sun[_x_], sun[_y_], sun[_z_]);
     Serial.println(buf);
 
-    while(!timeClient.update()) {
-        timeClient.forceUpdate();
-    }
     String outs = timeClient.getFormattedDate();
     Serial.println(outs);
 }
