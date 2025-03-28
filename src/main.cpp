@@ -138,9 +138,13 @@ bool cmd_reboot(void){
 }
 
 bool cmd_test_rotframe(void){
-    float m[] = {0.35, 0.72, -0.05};
-    float g[] = {0.1, 0.07, -1.};
-    float *rf[3], _rotframe[9];
+    //float m[] = {0.35, 0.72, -0.05};
+    //float g[] = {0.1, 0.07, -1.};
+
+    float m[] = {0.0, 1.0, 0.0};
+    float g[] = {0.0, 0.0, -1.0};
+    float ray[] = {3.2, 5.7, 1.4};
+    float *rf[3], _rotframe[9], outray[3];
 
     char buf[256];
 
@@ -153,6 +157,14 @@ bool cmd_test_rotframe(void){
     sprintf(buf, "%+6.4f %+6.4f %+6.4f\n%+6.4f %+6.4f %+6.4f\n%+6.4f %+6.4f %+6.4f\n", rf[0][0], rf[0][1], rf[0][2],
                                                                                        rf[1][0], rf[1][1], rf[1][2], 
                                                                                        rf[2][0], rf[2][1], rf[2][2]);
+    Controller.write(buf);
+    frame_transform(ray, rf, outray);
+    sprintf(buf, "%+6.4f %+6.4f %+6.4f\n", outray[0], outray[1], outray[2]);
+    Controller.write(buf);
+
+    float alt = vec_to_alt(outray) * 180./PI,
+          azi = vec_to_azi(outray) * 180./PI;
+    sprintf(buf, "AZI: %05.1f (N) ALT: %05.1f\n", 90.-azi, alt);
     Controller.write(buf);
     return true;
 }
@@ -346,6 +358,40 @@ void get_normal_vec(float *in, float *out, float *mir){
     norm = - 2.0 * sqrt((1+norm)/2.0);
     for(int i=0; i < 3; i++)
         mir[i] = (in[i] - out[i])/norm; 
+}
+
+void frame_transform(float *i, float **r, float *o){
+    /*Given a vector apply to it the transformation r*/
+    o[_x_] = i[_x_] * r[_x_][_x_] + i[_y_] * r[_x_][_y_] + i[_z_] * r[_x_][_z_];
+    o[_y_] = i[_x_] * r[_y_][_x_] + i[_y_] * r[_y_][_y_] + i[_z_] * r[_y_][_z_];
+    o[_z_] = i[_x_] * r[_z_][_x_] + i[_y_] * r[_z_][_y_] + i[_z_] * r[_z_][_z_];
+}
+
+float vec_to_azi(float *i){
+    float norm = sqrt(i[_x_]*i[_x_] + i[_y_]*i[_y_]);
+    float azi = sc2a(i[_y_]/norm, i[_x_]/norm);
+    return azi;
+}
+
+float vec_to_alt(float *i){
+    float norm = sqrt(i[_x_]*i[_x_] + i[_y_]*i[_y_] + i[_z_]*i[_z_]);
+    float alt = sc2a(i[_z_]/norm, sqrt(i[_x_]*i[_x_] + i[_y_]*i[_y_])/norm);
+    return alt;
+}
+
+float sc2a(float sine, float cosine){
+    float angle;
+    if(abs(sine) > abs(cosine)){
+        angle = asin(sine);
+        if(cosine < 0)
+            angle = PI/2 - angle;
+    }
+    else{
+        angle = acos(cosine);
+        if(sine < 0)
+            angle = -angle;
+    }
+    return angle;
 }
 
 void compute_frame_rotation(float *g, float *m, float **r){
