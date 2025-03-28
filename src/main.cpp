@@ -4,6 +4,10 @@
 
 const char* ssid = WIFI_SSID;
 const char* password = WIFI_PASSWORD;
+bool WiFi_ok = false;
+
+WiFiServer ComServer(23);
+WiFiClient Controller;
 
 uint32_t chip_id;
 
@@ -15,25 +19,26 @@ ESP32Time rtc;
 bool RTC_ok = false;
 
 Adafruit_MPU6050 mpu;
-
+bool MPU_ok = false;
 
 float sun[3];
 float mir[3];
 float ory[3];
 
-void setup_i2c(void){
-    return;
+void setup_remote_com(void){
+    ComServer.begin();
 }
 
-void setup_accell_compass(void){
+void setup_accell_compass_MPU6050(void){
+    Serial.println("Initializing MPU6050");
     if (!mpu.begin()) {
         Serial.println("Failed to find MPU6050 chip");
-        while (1) {
-        delay(10);
-        }
+        MPU_ok = false;
     }
-    Serial.println("MPU6050 Found!");
-    
+    else{
+        Serial.println("MPU6050 Found!");
+        MPU_ok = true;
+    }
 }
 
 void setup_wifi(){
@@ -41,15 +46,21 @@ void setup_wifi(){
   
     Serial.println();
     Serial.print("Connecting");
-    while (WiFi.status() != WL_CONNECTED)
+    for(uint8_t i=0;i < 20 && WiFi.status() != WL_CONNECTED; i++)
     {
       delay(500);
       Serial.print(".");
     }
-  
-    Serial.println("success!");
-    Serial.print("IP Address is: ");
-    Serial.println(WiFi.localIP());
+    if(WiFi.status() == WL_CONNECTED){
+        Serial.println("Connected");
+        Serial.print("IP Address is: ");
+        Serial.println(WiFi.localIP());
+        WiFi_ok = true;
+    }
+    else{
+        Serial.println("Connection failed after 10s.");
+        WiFi_ok = false;
+    }
 }
 
 void setup_ntp(void){
@@ -78,11 +89,121 @@ void setup() {
 
     delay(2000);
 
-    Serial.printf("CHIP ID: %012x\n", chip_id);
-
     setup_wifi();
     setup_ntp();
     setup_rtc();
+    setup_accell_compass_MPU6050();
+    setup_remote_com();
+}
+
+uint16_t com_get_next_cmd(char *buf, uint16_t minbuf, uint16_t maxbuf){
+    uint16_t i;
+    for(i = minbuf; i < maxbuf && (buf[i] = Controller.read()) != '\n' && buf[i] != -1; i++);
+    if(buf[i] == '\n' || i == maxbuf){
+        buf[i] = '\0';
+        return maxbuf;
+    }
+    else
+        return i;
+}
+
+bool cmd_id(void){
+    char buf[16];
+    sprintf(buf, "%012x\n", chip_id);
+    Controller.write(buf);
+    return true;
+}
+
+bool cmd_err(char *cmd){
+    char buf[128];
+    sprintf(buf, "command unknown %s\n", cmd);
+    Controller.write(buf);
+    return false;
+}
+
+bool cmd_time(void){
+    char buf[32];
+    uint16_t y;
+    uint8_t m,d, h, mi;
+    float s;
+    get_time(&y, &m, &d, &h, &mi, &s);
+    sprintf(buf, "%02d:%02d:%06.3f %02d-%02d-%04d UTC\n", h, mi, s, d, m, y);
+    Controller.write(buf);
+    return true;
+}
+
+bool cmd_reboot(void){
+    ESP.restart();
+    return true;
+}
+
+bool cmd_test_rotframe(void){
+    float m[] = {0.35, 0.72, -0.05};
+    float g[] = {0.1, 0.07, -1.};
+    float *rf[3], _rotframe[9];
+
+    char buf[256];
+
+    rf[0] = &(_rotframe[0]);
+    rf[1] = &(_rotframe[3]);
+    rf[2] = &(_rotframe[6]);
+
+    compute_frame_rotation(g, m, rf);
+    Serial.printf("Done");
+    sprintf(buf, "%+6.4f %+6.4f %+6.4f\n%+6.4f %+6.4f %+6.4f\n%+6.4f %+6.4f %+6.4f\n", rf[0][0], rf[0][1], rf[0][2],
+                                                                                       rf[1][0], rf[1][1], rf[1][2], 
+                                                                                       rf[2][0], rf[2][1], rf[2][2]);
+    Controller.write(buf);
+    return true;
+}
+
+bool cmd_parse(char *buf){
+    char *tok, *rest;
+    const char *delim = " \n\r";
+    rest = buf;
+    tok = strtok_r(buf, delim, &rest);
+
+    //for(int i=0; tok[i]  != '\0'; i++)
+    //    Serial.printf("Char %d : '%c'\n", i, tok[i]);
+    if(tok == NULL){
+        return true;
+    }
+    else if(strcmp(tok, "id") == 0){
+        return cmd_id();
+    }
+    else if(strcmp(tok, "time") == 0){
+        return cmd_time();
+    }
+    else if(strcmp(tok, "reboot") == 0){
+        return cmd_reboot();
+    }
+    else if(strcmp(tok, "test-rf") == 0){
+        return cmd_test_rotframe();
+    }
+    else{
+        return cmd_err(tok);
+    }
+
+}
+
+void check_com_connections(void){
+  if (ComServer.hasClient())
+  {
+    // If we are already connected to another computer, 
+    // then reject the new connection. Otherwise accept
+    // the connection. 
+    if (Controller.connected())
+    {
+      Serial.println("Connection rejected");
+      ComServer.available().stop();
+    }
+    else
+    {
+      Serial.println("Connection accepted");
+      Controller = ComServer.available();
+      Controller.write("[  ] > ");
+    }
+  }
 }
 
 void update_time_from_NTP(void){
@@ -161,12 +282,36 @@ void loop() {
     float seconds; 
     char buf[256];
 
-    get_time(&year, &month, &day, &hours, &minutes, &seconds);
-    sprintf(buf, "%d-%d-%d %d:%d:%.1f UTC\n", year, month, day, hours, minutes, seconds);
-    Serial.println(buf);
+    uint16_t buf_last = 0;
+    char cmd_buf[CMD_BUF_LEN];
+
+    if(Controller.available()){
+        buf_last = com_get_next_cmd(cmd_buf, buf_last, CMD_BUF_LEN);
+        if(buf_last == CMD_BUF_LEN){
+            if( cmd_parse(cmd_buf) ){
+                Controller.write("[OK] ");
+            }
+            else{
+                Controller.write("[!!] ");
+            }
+            Controller.write("> ");
+            buf_last = 0;
+        }
+    }
+    else{
+        check_com_connections();
+        if(Controller.available()){
+            Controller.flush();
+            // Don't know why the one above does not work...
+            com_get_next_cmd(cmd_buf, 0, CMD_BUF_LEN);
+        }
+    }
+    //get_time(&year, &month, &day, &hours, &minutes, &seconds);
+    //sprintf(buf, "%d-%d-%d %d:%d:%.1f UTC\n", year, month, day, hours, minutes, seconds);
+    //Serial.println(buf);
     get_sun_vec(GEO_LON, GEO_LAT, year, month, day, hours, minutes, seconds, sun);
-    serial_log();
-    delay(1000); // Wait for 1 second
+    //serial_log();
+    //delay(1000); // Wait for 1 second
 }
 
 void serial_log(){
@@ -201,6 +346,62 @@ void get_normal_vec(float *in, float *out, float *mir){
     norm = - 2.0 * sqrt((1+norm)/2.0);
     for(int i=0; i < 3; i++)
         mir[i] = (in[i] - out[i])/norm; 
+}
+
+void compute_frame_rotation(float *g, float *m, float **r){
+    /* Given the magnetic vector m and the gravity vector g, compute
+    the rotation matrix (r) from absolute frame (EST = x, NORD = y, UP = z)
+    to the internal frame.*/
+
+    float g_n[3], m_n[3], nord[3], up[3], est[3], norm;
+    
+    // Compute normalized g and m
+    norm = sqrt(g[0]*g[0] + g[1]*g[1] + g[2]*g[2]);
+    g[0] /= norm;
+    g[1] /= norm;
+    g[2] /= norm;
+
+    norm = sqrt(m[0]*m[0] + m[1]*m[1] + m[2]*m[2]);
+    m[0] /= norm;
+    m[1] /= norm;
+    m[2] /= norm;
+
+    // Compute nord vector as the projection of m on the 
+    // plane orthogonal to g
+    // nord = m - (g.m)g
+    float g_dot_m = g[_x_]*m[_x_] + g[_y_]*m[_y_] + g[_z_]*m[_z_];
+    nord[_x_] = m[_x_] - g_dot_m * g[_x_];
+    nord[_y_] = m[_y_] - g_dot_m * g[_y_];
+    nord[_z_] = m[_z_] - g_dot_m * g[_z_];
+    Serial.printf("NORD: %+6.4f %+6.4f %+6.4f\n", nord[_x_], nord[_y_], nord[_z_]);
+
+    // Normalize the nord
+    norm = sqrt(nord[0]*nord[0] + nord[1]*nord[1] + nord[2]*nord[2]);
+    nord[_x_] /= norm;
+    nord[_y_] /= norm;
+    nord[_z_] /= norm;
+
+    // Up is the inverse of gravity
+    up[_x_] = -g[_x_];
+    up[_y_] = -g[_y_];
+    up[_z_] = -g[_z_];
+
+    // Est is nord x up to give e right-handed system
+    est[_x_] = nord[_y_] * up[_z_] - nord[_z_] * up[_y_];
+    est[_y_] = nord[_z_] * up[_x_] - nord[_x_] * up[_z_];
+    est[_z_] = nord[_x_] * up[_y_] - nord[_y_] * up[_x_];
+
+    r[_x_][_x_] = est[_x_];
+    r[_x_][_y_] = nord[_x_];
+    r[_x_][_z_] = up[_x_];
+    
+    r[_y_][_x_] = est[_y_];
+    r[_y_][_y_] = nord[_y_];
+    r[_y_][_z_] = up[_y_];
+
+    r[_z_][_x_] = est[_z_];
+    r[_z_][_y_] = nord[_z_];
+    r[_z_][_z_] = up[_z_];
 }
 
 void get_sun_vec(float lon, float lat, 

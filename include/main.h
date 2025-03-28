@@ -19,6 +19,8 @@
 #define _y_ 1
 #define _z_ 2
 
+#define CMD_BUF_LEN 256
+
 void setup_wifi();
 
 void setup_ntp(void);
@@ -31,6 +33,7 @@ void get_time_NTP(uint16_t *year, uint8_t *month, uint8_t *day, uint8_t *hours, 
 
 void serial_log();
 
+void compute_frame_rotation(float *g, float *m, float **r);
 void get_reflection_vec(float *in, float *mir, float *out);
 void get_normal_vec(float *in, float *out, float *mir);
 void get_sun_vec(float lon, float lat, 
