@@ -10,6 +10,8 @@
 #include <SolTrack.h>
 // Math Lib
 #include <math.h>
+//Non volatile memory
+#include <Preferences.h>
 
 #include <Adafruit_MPU6050.h>
 #include <Adafruit_Sensor.h>
@@ -21,10 +23,18 @@
 
 #define CMD_BUF_LEN 256
 
+#define PREF_RW_MODE false
+#define PREF_RO_MODE true
+
 void setup_wifi();
 
 void setup_ntp(void);
 void setup_rtc(void);
+
+void MPU_update_rot_frame(float **rf);
+
+float get_lat(void);
+float get_lon(void);
 
 void update_time_from_NTP(void);
 void get_time(uint16_t *year, uint8_t *month, uint8_t *day, uint8_t *hours, uint8_t *minutes, float *seconds);

@@ -19,7 +19,14 @@ ESP32Time rtc;
 bool RTC_ok = false;
 
 Adafruit_MPU6050 mpu;
-bool MPU_ok = false;
+// Rotation matrix initialized with identity
+float *rf[3], _rf[9] = {1., 0., 0.,
+                        0., 1., 0.,
+                        0., 0., 1.}; 
+bool MPU_ok = false, ROTF_ok=false;
+
+// Non volatile memory
+Preferences HGPrefs; 
 
 float sun[3];
 float mir[3];
@@ -27,6 +34,10 @@ float ory[3];
 
 void setup_remote_com(void){
     ComServer.begin();
+}
+
+void setup_pref(void){
+    HGPrefs.begin("hg", PREF_RW_MODE);
 }
 
 void setup_accell_compass_MPU6050(void){
@@ -38,6 +49,13 @@ void setup_accell_compass_MPU6050(void){
     else{
         Serial.println("MPU6050 Found!");
         MPU_ok = true;
+    }
+    if(MPU_ok){
+        rf[0] = &(_rf[0]);
+        rf[1] = &(_rf[3]);
+        rf[2] = &(_rf[6]);
+        MPU_update_rot_frame(rf);
+        ROTF_ok = true;
     }
 }
 
@@ -89,6 +107,7 @@ void setup() {
 
     delay(2000);
 
+    setup_pref();
     setup_wifi();
     setup_ntp();
     setup_rtc();
@@ -138,19 +157,16 @@ bool cmd_reboot(void){
 }
 
 bool cmd_test_rotframe(void){
-    //float m[] = {0.35, 0.72, -0.05};
-    //float g[] = {0.1, 0.07, -1.};
-
-    float m[] = {0.0, 1.0, 0.0};
+    float m[] = {1.0, 1.0, 0.0};
     float g[] = {0.0, 0.0, -1.0};
     float ray[] = {3.2, 5.7, 1.4};
-    float *rf[3], _rotframe[9], outray[3];
+    float outray[3];
 
     char buf[256];
 
-    rf[0] = &(_rotframe[0]);
-    rf[1] = &(_rotframe[3]);
-    rf[2] = &(_rotframe[6]);
+    rf[0] = &(_rf[0]);
+    rf[1] = &(_rf[3]);
+    rf[2] = &(_rf[6]);
 
     compute_frame_rotation(g, m, rf);
     Serial.printf("Done");
@@ -169,14 +185,31 @@ bool cmd_test_rotframe(void){
     return true;
 }
 
+bool cmd_set_geo(char *buf){
+    float lat = get_lat(), 
+          lon = get_lon();
+
+    sscanf(buf, "%f%f", &lat, &lon);
+    HGPrefs.putFloat("lat", lat);
+    HGPrefs.putFloat("lon", lon);
+    return true;
+}
+
+bool cmd_get_geo(void){
+    float lat = get_lat(), 
+          lon = get_lon();
+    char buf[32];
+    sprintf(buf, "LAT: %08.4f, LON: %08.4f\n", lat, lon);
+    Controller.write(buf);
+    return true;
+}
+
 bool cmd_parse(char *buf){
     char *tok, *rest;
     const char *delim = " \n\r";
     rest = buf;
     tok = strtok_r(buf, delim, &rest);
 
-    //for(int i=0; tok[i]  != '\0'; i++)
-    //    Serial.printf("Char %d : '%c'\n", i, tok[i]);
     if(tok == NULL){
         return true;
     }
@@ -190,7 +223,14 @@ bool cmd_parse(char *buf){
         return cmd_reboot();
     }
     else if(strcmp(tok, "test-rf") == 0){
+        // TODO REMOVE
         return cmd_test_rotframe();
+    }
+    else if(strcmp(tok, "set-geo") == 0){
+        return cmd_set_geo(rest);
+    }
+    else if(strcmp(tok, "get-geo") == 0){
+        return cmd_get_geo();
     }
     else{
         return cmd_err(tok);
@@ -321,7 +361,7 @@ void loop() {
     //get_time(&year, &month, &day, &hours, &minutes, &seconds);
     //sprintf(buf, "%d-%d-%d %d:%d:%.1f UTC\n", year, month, day, hours, minutes, seconds);
     //Serial.println(buf);
-    get_sun_vec(GEO_LON, GEO_LAT, year, month, day, hours, minutes, seconds, sun);
+    get_sun_vec(get_lon(), get_lat(), year, month, day, hours, minutes, seconds, sun);
     //serial_log();
     //delay(1000); // Wait for 1 second
 }
@@ -358,6 +398,13 @@ void get_normal_vec(float *in, float *out, float *mir){
     norm = - 2.0 * sqrt((1+norm)/2.0);
     for(int i=0; i < 3; i++)
         mir[i] = (in[i] - out[i])/norm; 
+}
+
+void MPU_update_rot_frame(float **rf){
+    float m[3], g[3];
+    // TODO Read m and g from the sensor
+    // ...
+    compute_frame_rotation(g, m, rf);
 }
 
 void frame_transform(float *i, float **r, float *o){
@@ -450,6 +497,14 @@ void compute_frame_rotation(float *g, float *m, float **r){
     r[_z_][_z_] = up[_z_];
 }
 
+float get_lon(void){
+    return HGPrefs.getFloat("lon", DEFAULT_GEO_LON);;
+}
+
+float get_lat(void){
+    return HGPrefs.getFloat("lat", DEFAULT_GEO_LAT);
+}
+
 void get_sun_vec(float lon, float lat, 
                  int yr, int month, int day, int hour, int min, float sec, 
                  float *sun){         
@@ -479,12 +534,6 @@ void get_sun_vec(float lon, float lat,
 
     float alt = pos.altitudeRefract / R2D,
           az  = pos.azimuthRefract / R2D;
-
-    /*char buf[256];
-    sprintf(buf, "Sun Azimut: %.5f", pos.azimuthRefract);
-    Serial.println(buf);
-    sprintf(buf, "Sun Altit : %.5f", pos.altitudeRefract);
-    Serial.println(buf);*/
       
     sun[_x_] = cos(PI/2.0 - az) * cos(alt);
     sun[_y_] = sin(PI/2.0 - az) * cos(alt);
