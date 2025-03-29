@@ -4,9 +4,6 @@
 [submodule "lib/ESP32Time"]
 	path = lib/ESP32Time
 	url = https://github.com/fbiego/ESP32Time.git
-[submodule "lib/Adafruit_MPU5060"]
-	path = lib/Adafruit_MPU5060
-	url = https://github.com/adafruit/Adafruit_MPU6050.git
 [submodule "lib/Adafruit_Sensor"]
 	path = lib/Adafruit_Sensor
 	url = https://github.com/adafruit/Adafruit_Sensor.git
@@ -19,3 +16,9 @@
 [submodule "lib/Preference8266"]
 	path = lib/Preference8266
 	url = https://github.com/vshymanskyy/Preferences.git
+[submodule "lib/Adafruit_MPU9250"]
+	path = lib/Adafruit_MPU9250
+	url = https://github.com/jfredine/Adafruit_MPU9250.git
+[submodule "lib/Adafruit_MPU6050"]
+	path = lib/Adafruit_MPU6050
+	url = https://github.com/adafruit/Adafruit_MPU6050.git
