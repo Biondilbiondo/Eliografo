@@ -1,6 +1,13 @@
+#include "configs.h"
+
 #include <Arduino.h>
 // WiFi connection
+#ifdef USE_ESP8266
 #include <ESP8266WiFi.h>
+#endif
+#ifdef USE_ESP32
+#include <WiFi.h>
+#endif
 // NTP
 #include <NTPClient.h>
 #include <WiFiUdp.h>
@@ -13,9 +20,22 @@
 //Non volatile memory
 #include <Preferences.h>
 
+// MPU gyro accell sensor
+#ifdef USE_MPU6050
 #include <Adafruit_MPU6050.h>
+#endif
+#ifdef USE_MPU9250
+#include <Adafruit_MPU9250.h>
+#endif
 #include <Adafruit_Sensor.h>
 #include <Wire.h>
+
+// PID motor control
+#include <QuickPID.h>
+
+// PWM definitions
+#define MOTOR_PWM_RES 8
+#define MOTOR_PWM_FREQ 500
 
 #define _x_ 0
 #define _y_ 1
@@ -25,6 +45,7 @@
 
 #define PREF_RW_MODE false
 #define PREF_RO_MODE true
+
 
 void setup_wifi();
 
@@ -53,3 +74,8 @@ void get_normal_vec(float *in, float *out, float *mir);
 void get_sun_vec(float lon, float lat, 
                  int yr, int month, int day, int hour, int min, float sec, 
                  float *sun);
+
+void set_azi_motor_speed(int8_t speed);
+void set_alt_motor_speed(int8_t speed);
+void azi_motor_standby(void);
+void alt_motor_standby(void);

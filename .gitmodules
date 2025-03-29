@@ -22,3 +22,6 @@
 [submodule "lib/Adafruit_MPU6050"]
 	path = lib/Adafruit_MPU6050
 	url = https://github.com/adafruit/Adafruit_MPU6050.git
+[submodule "lib/QuickPID"]
+	path = lib/QuickPID
+	url = https://github.com/Dlloydev/QuickPID

@@ -18,7 +18,13 @@ bool NTP_ok = false;
 ESP32Time rtc;
 bool RTC_ok = false;
 
+#ifdef USE_MPU6050
 Adafruit_MPU6050 mpu;
+#endif
+#ifdef USE_MPU9250
+Adafruit_Sensor *accelerometer, *gyroscope, *magnetometer;
+#endif
+
 // Rotation matrix initialized with identity
 float *rf[3], _rf[9] = {1., 0., 0.,
                         0., 1., 0.,
@@ -40,6 +46,7 @@ void setup_pref(void){
     HGPrefs.begin("hg", PREF_RW_MODE);
 }
 
+#ifdef USE_MPU6050
 void setup_accell_compass_MPU6050(void){
     Serial.println("Initializing MPU6050");
     if (!mpu.begin()) {
@@ -57,6 +64,29 @@ void setup_accell_compass_MPU6050(void){
         MPU_update_rot_frame(rf);
         ROTF_ok = true;
     }
+}
+#endif
+
+#ifdef USE_MPU9250
+void setup_accell_compass_MPU9250(void){
+    // TODO
+    // Check examples from https://github.com/jfredine/Adafruit_MPU9250/
+}
+#endif
+
+void setup_motors(){
+    pinMode(ALT_MOTOR_DIR1, OUTPUT);
+    pinMode(ALT_MOTOR_DIR2, OUTPUT);
+    ledcSetup(ALT_MOTOR_PWM_CH, MOTOR_PWM_FREQ, MOTOR_PWM_RES);
+    ledcAttachPin(ALT_MOTOR_PWM, ALT_MOTOR_PWM_CH);
+
+    pinMode(AZI_MOTOR_DIR1, OUTPUT);
+    pinMode(AZI_MOTOR_DIR2, OUTPUT);
+    ledcSetup(AZI_MOTOR_PWM_CH, MOTOR_PWM_FREQ, MOTOR_PWM_RES);
+    ledcAttachPin(AZI_MOTOR_PWM, AZI_MOTOR_PWM_CH);
+
+    azi_motor_standby();
+    alt_motor_standby();
 }
 
 void setup_wifi(){
@@ -99,8 +129,13 @@ void setup() {
     sun[_x_] = sun[_y_] = sun[_z_] = 0.;
     mir[_x_] = mir[_y_] = mir[_z_] = 0.;
     ory[_x_] = ory[_y_] = ory[_z_] = 0.;
-    
+
+#ifdef USE_ESP8266
     chip_id = ESP.getChipId();
+#endif
+#ifdef USE_ESP32
+    chip_id = (uint32_t) ESP.getEfuseMac();
+#endif
 
     // Serial communication
     Serial.begin(9600);
@@ -111,8 +146,14 @@ void setup() {
     setup_wifi();
     setup_ntp();
     setup_rtc();
+#ifdef USE_MPU6050
     setup_accell_compass_MPU6050();
+#endif 
+#ifdef USE_MPU9250
+    setup_accell_compass_MPU9250();
+#endif
     setup_remote_com();
+    setup_motors();
 }
 
 uint16_t com_get_next_cmd(char *buf, uint16_t minbuf, uint16_t maxbuf){
@@ -538,4 +579,64 @@ void get_sun_vec(float lon, float lat,
     sun[_x_] = cos(PI/2.0 - az) * cos(alt);
     sun[_y_] = sin(PI/2.0 - az) * cos(alt);
     sun[_z_] = sin(alt);
+}
+
+void set_alt_motor_speed(int8_t speed){
+    if(speed > 0){
+        // Forward motion
+        ledcWrite(ALT_MOTOR_PWM, 0);
+        digitalWrite(ALT_MOTOR_DIR1, LOW);
+        digitalWrite(ALT_MOTOR_DIR2, HIGH);
+        ledcWrite(ALT_MOTOR_PWM, abs(speed)*2);
+    }
+    else if(speed < 0){
+        // Bakward motion
+        ledcWrite(ALT_MOTOR_PWM, 0);
+        digitalWrite(ALT_MOTOR_DIR1, HIGH);
+        digitalWrite(ALT_MOTOR_DIR2, LOW);
+        ledcWrite(ALT_MOTOR_PWM, abs(speed)*2);
+    }
+    else{
+        // Blocked 
+        ledcWrite(ALT_MOTOR_PWM, 0);
+        digitalWrite(ALT_MOTOR_DIR1, LOW);
+        digitalWrite(ALT_MOTOR_DIR2, LOW);
+        ledcWrite(ALT_MOTOR_PWM, 255);
+    }
+}
+
+void set_azi_motor_speed(int8_t speed){
+    if(speed > 0){
+        // Forward motion
+        ledcWrite(AZI_MOTOR_PWM, 0);
+        digitalWrite(AZI_MOTOR_DIR1, LOW);
+        digitalWrite(AZI_MOTOR_DIR2, HIGH);
+        ledcWrite(AZI_MOTOR_PWM, abs(speed)*2);
+    }
+    else if(speed < 0){
+        // Bakward motion
+        ledcWrite(AZI_MOTOR_PWM, 0);
+        digitalWrite(AZI_MOTOR_DIR1, HIGH);
+        digitalWrite(AZI_MOTOR_DIR2, LOW);
+        ledcWrite(AZI_MOTOR_PWM, abs(speed)*2);
+    }
+    else{
+        // Blocked 
+        ledcWrite(AZI_MOTOR_PWM, 0);
+        digitalWrite(AZI_MOTOR_DIR1, LOW);
+        digitalWrite(AZI_MOTOR_DIR2, LOW);
+        ledcWrite(AZI_MOTOR_PWM, 255);
+    }
+}
+
+void azi_motor_standby(void){
+    ledcWrite(AZI_MOTOR_PWM, 0);
+    digitalWrite(AZI_MOTOR_DIR1, LOW);
+    digitalWrite(AZI_MOTOR_DIR2, LOW);
+}
+
+void alt_motor_standby(void){
+    ledcWrite(ALT_MOTOR_PWM, 0);
+    digitalWrite(ALT_MOTOR_DIR1, LOW);
+    digitalWrite(ALT_MOTOR_DIR2, LOW);
 }
