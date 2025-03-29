@@ -2,12 +2,7 @@
 
 #include <Arduino.h>
 // WiFi connection
-#ifdef USE_ESP8266
-#include <ESP8266WiFi.h>
-#endif
-#ifdef USE_ESP32
 #include <WiFi.h>
-#endif
 // NTP
 #include <NTPClient.h>
 #include <WiFiUdp.h>
@@ -57,6 +52,13 @@ void MPU_update_rot_frame(float **rf);
 float get_lat(void);
 float get_lon(void);
 
+float get_azi_ki(void);
+float get_azi_kp(void);
+float get_azi_kd(void);
+float get_alt_kd(void);
+float get_alt_kp(void);
+float get_alt_ki(void);
+
 void update_time_from_NTP(void);
 void get_time(uint16_t *year, uint8_t *month, uint8_t *day, uint8_t *hours, uint8_t *minutes, float *seconds);
 void get_time_RTC(uint16_t *year, uint8_t *month, uint8_t *day, uint8_t *hours, uint8_t *minutes, float *seconds);
@@ -79,3 +81,9 @@ void set_azi_motor_speed(int8_t speed);
 void set_alt_motor_speed(int8_t speed);
 void azi_motor_standby(void);
 void alt_motor_standby(void);
+void azi_motor_enable(void);
+void alt_motor_enable(void);
+float read_azi_encoder(void);
+float read_alt_encoder(void);
+
+void IRAM_ATTR PID_isr(void);

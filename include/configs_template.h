@@ -9,14 +9,20 @@
 #define ATM_PRESSURE 101.0 //kPa
 #define ATM_TEMPERATURE 298.0 // K
 
+#define DEFAULT_AZI_KP 10.
+#define DEFAULT_AZI_KD 0.
+#define DEFAULT_AZI_KI 0.
+
+#define DEFAULT_ALT_KP 10.
+#define DEFAULT_ALT_KD 0.
+#define DEFAULT_ALT_KI 0.
+
+#define PID_INTERRUPT_MS 10
+
 #define USE_MPU6050
-#define USE_ESP8266
 
 #ifndef USE_MPU6050
 #define USE_MPU9250
 #endif
 
-#ifndef USE_ESP8266
-#define USE_ESP32
-#endif
 #endif

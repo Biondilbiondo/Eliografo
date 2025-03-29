@@ -34,6 +34,16 @@ bool MPU_ok = false, ROTF_ok=false;
 // Non volatile memory
 Preferences HGPrefs; 
 
+// Control variables
+float azi_setpoint, alt_setpoint,
+      azi_encoder_val, alt_encoder_val,
+      azi_motor_speed, alt_motor_speed;
+
+QuickPID aziPID(&azi_encoder_val, &azi_motor_speed, &azi_setpoint);
+QuickPID altPID(&alt_encoder_val, &alt_motor_speed, &alt_setpoint);
+bool azi_PID_enabled = false, alt_PID_enabled = false;
+hw_timer_t *PID_timer_cfg = NULL;
+
 float sun[3];
 float mir[3];
 float ory[3];
@@ -85,6 +95,31 @@ void setup_motors(){
     ledcSetup(AZI_MOTOR_PWM_CH, MOTOR_PWM_FREQ, MOTOR_PWM_RES);
     ledcAttachPin(AZI_MOTOR_PWM, AZI_MOTOR_PWM_CH);
 
+    azi_encoder_val = read_azi_encoder();
+    alt_encoder_val = read_alt_encoder();
+    azi_setpoint = azi_encoder_val;
+    alt_setpoint = alt_encoder_val;
+    aziPID.SetTunings(get_azi_kp(),
+                      get_azi_ki(),
+                      get_azi_kd());
+    aziPID.SetOutputLimits(-126, 126);
+#ifdef AZI_REVERSED
+    aziPID.SetControllerDirection(QuickPID::Action::reverse);
+#endif
+    altPID.SetTunings(get_alt_kp(),
+                      get_alt_ki(),
+                      get_alt_kd());
+    altPID.SetOutputLimits(-126, 126);
+    // uncomment to reverse motor direction
+#ifdef ALT_REVERSED
+    altPID.SetControllerDirection(QuickPID::Action::reverse);
+#endif
+
+    PID_timer_cfg = timerBegin(0, 40000, true);
+    timerAttachInterrupt(PID_timer_cfg, &PID_isr, true);
+    timerAlarmWrite(PID_timer_cfg, PID_INTERRUPT_MS, true);
+    timerAlarmEnable(PID_timer_cfg);
+
     azi_motor_standby();
     alt_motor_standby();
 }
@@ -130,12 +165,7 @@ void setup() {
     mir[_x_] = mir[_y_] = mir[_z_] = 0.;
     ory[_x_] = ory[_y_] = ory[_z_] = 0.;
 
-#ifdef USE_ESP8266
-    chip_id = ESP.getChipId();
-#endif
-#ifdef USE_ESP32
     chip_id = (uint32_t) ESP.getEfuseMac();
-#endif
 
     // Serial communication
     Serial.begin(9600);
@@ -236,11 +266,30 @@ bool cmd_set_geo(char *buf){
     return true;
 }
 
+bool cmd_set(char *buf){
+    float val;
+    char *key, *rest;
+
+    key = strtok_r(buf, " \n\r", &rest);
+    sscanf(rest, "%f", val);
+    HGPrefs.putFloat(key, val);
+    return true;
+}
+
 bool cmd_get_geo(void){
     float lat = get_lat(), 
           lon = get_lon();
     char buf[32];
     sprintf(buf, "LAT: %08.4f, LON: %08.4f\n", lat, lon);
+    Controller.write(buf);
+    return true;
+}
+
+bool cmd_pid_prm(void){
+    char buf[64];
+    sprintf(buf, "ALT: P %8.1f I %8.1f D %8.1f\n", get_alt_kp(), get_alt_ki(), get_alt_kd());
+    Controller.write(buf);
+    sprintf(buf, "AZIT: P %8.1f I %8.1f D %8.1f\n", get_azi_kp(), get_azi_ki(), get_azi_kd());
     Controller.write(buf);
     return true;
 }
@@ -270,8 +319,14 @@ bool cmd_parse(char *buf){
     else if(strcmp(tok, "set-geo") == 0){
         return cmd_set_geo(rest);
     }
+    else if(strcmp(tok, "set") == 0){
+        return cmd_set(rest);
+    }
     else if(strcmp(tok, "get-geo") == 0){
         return cmd_get_geo();
+    }
+    else if(strcmp(tok, "pid-prm") == 0){
+        return cmd_pid_prm();
     }
     else{
         return cmd_err(tok);
@@ -630,13 +685,79 @@ void set_azi_motor_speed(int8_t speed){
 }
 
 void azi_motor_standby(void){
+    azi_PID_enabled = false;
     ledcWrite(AZI_MOTOR_PWM, 0);
     digitalWrite(AZI_MOTOR_DIR1, LOW);
     digitalWrite(AZI_MOTOR_DIR2, LOW);
 }
 
 void alt_motor_standby(void){
+    alt_PID_enabled = false;
     ledcWrite(ALT_MOTOR_PWM, 0);
     digitalWrite(ALT_MOTOR_DIR1, LOW);
     digitalWrite(ALT_MOTOR_DIR2, LOW);
+}
+
+void azi_motor_enable(void){
+    azi_encoder_val = read_alt_encoder();
+    azi_setpoint = azi_encoder_val;
+    aziPID.Initialize();
+    azi_PID_enabled = true;
+}
+
+void alt_motor_enable(void){
+    alt_encoder_val = read_alt_encoder();
+    alt_setpoint = alt_encoder_val;
+    altPID.Initialize();
+    alt_PID_enabled = true;
+}
+
+
+float get_azi_ki(void){
+    return HGPrefs.getFloat("azi_ki", DEFAULT_AZI_KI);;
+}
+
+float get_azi_kp(void){
+    return HGPrefs.getFloat("azi_ki", DEFAULT_AZI_KP);;
+}
+
+float get_azi_kd(void){
+    return HGPrefs.getFloat("azi_ki", DEFAULT_AZI_KD);;
+}
+
+float get_alt_kd(void){
+    return HGPrefs.getFloat("alt_kd", DEFAULT_ALT_KD);;
+}
+
+float get_alt_kp(void){
+    return HGPrefs.getFloat("alt_kp", DEFAULT_ALT_KP);;
+}
+
+float get_alt_ki(void){
+    return HGPrefs.getFloat("alt_ki", DEFAULT_ALT_KI);;
+}
+
+float read_azi_encoder(void){
+    uint32_t mv = analogReadMilliVolts(AZI_ENCODER);
+    // This should be elaborated to return radians 
+    return mv / 3300 * 2 * PI; // Just to put something here
+}
+
+float read_alt_encoder(void){
+    uint32_t mv = analogReadMilliVolts(ALT_ENCODER);
+    // This should be elaborated to return radians 
+    return mv / 3300 * 2 * PI; // Just to put something here
+}
+
+void IRAM_ATTR PID_isr(void){
+    if(alt_PID_enabled){
+        alt_encoder_val = read_alt_encoder();
+        altPID.Compute();
+        set_alt_motor_speed(alt_motor_speed);
+    }
+    if(azi_PID_enabled){
+        azi_encoder_val = read_azi_encoder();
+        aziPID.Compute();
+        set_alt_motor_speed(azi_motor_speed);
+    }
 }
