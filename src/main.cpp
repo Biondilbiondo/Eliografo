@@ -99,16 +99,16 @@ void setup_motors(){
     alt_encoder_val = read_alt_encoder();
     azi_setpoint = azi_encoder_val;
     alt_setpoint = alt_encoder_val;
-    aziPID.SetTunings(get_azi_kp(),
-                      get_azi_ki(),
-                      get_azi_kd());
+    aziPID.SetTunings(get_float_cfg("azi_kp"),
+                      get_float_cfg("azi_ki"),
+                      get_float_cfg("azi_kd"));
     aziPID.SetOutputLimits(-126, 126);
 #ifdef AZI_REVERSED
     aziPID.SetControllerDirection(QuickPID::Action::reverse);
 #endif
-    altPID.SetTunings(get_alt_kp(),
-                      get_alt_ki(),
-                      get_alt_kd());
+    altPID.SetTunings(get_float_cfg("alt_kp"),
+                      get_float_cfg("alt_ki"),
+                      get_float_cfg("alt_kd"));
     altPID.SetOutputLimits(-126, 126);
     // uncomment to reverse motor direction
 #ifdef ALT_REVERSED
@@ -188,7 +188,8 @@ void setup() {
 
 uint16_t com_get_next_cmd(char *buf, uint16_t minbuf, uint16_t maxbuf){
     uint16_t i;
-    for(i = minbuf; i < maxbuf && (buf[i] = Controller.read()) != '\n' && buf[i] != -1; i++);
+    for(i = minbuf; i < maxbuf && (buf[i] = Controller.read()) != '\n' && buf[i] != -1; i++)
+        ;//Serial.printf("%d %d %d\n", i, minbuf, maxbuf);
     if(buf[i] == '\n' || i == maxbuf){
         buf[i] = '\0';
         return maxbuf;
@@ -257,8 +258,8 @@ bool cmd_test_rotframe(void){
 }
 
 bool cmd_set_geo(char *buf){
-    float lat = get_lat(), 
-          lon = get_lon();
+    float lat = get_float_cfg("lat"), 
+          lon = get_float_cfg("lon");
 
     sscanf(buf, "%f%f", &lat, &lon);
     HGPrefs.putFloat("lat", lat);
@@ -270,15 +271,17 @@ bool cmd_set(char *buf){
     float val;
     char *key, *rest;
 
-    key = strtok_r(buf, " \n\r", &rest);
-    sscanf(rest, "%f", val);
+    key = strtok_r(NULL, " \n\r", &buf);
+    rest = strtok_r(NULL, "\r\n", &buf);
+    sscanf(rest, "%f", &val);
     HGPrefs.putFloat(key, val);
     return true;
 }
 
 bool cmd_get_geo(void){
-    float lat = get_lat(), 
-          lon = get_lon();
+    float lat = get_float_cfg("lat"), 
+          lon = get_float_cfg("lon");
+
     char buf[32];
     sprintf(buf, "LAT: %08.4f, LON: %08.4f\n", lat, lon);
     Controller.write(buf);
@@ -287,9 +290,9 @@ bool cmd_get_geo(void){
 
 bool cmd_pid_prm(void){
     char buf[64];
-    sprintf(buf, "ALT: P %8.1f I %8.1f D %8.1f\n", get_alt_kp(), get_alt_ki(), get_alt_kd());
+    sprintf(buf, "ALT: P %8.1f I %8.1f D %8.1f\n", get_float_cfg("alt_kp"), get_float_cfg("alt_ki"), get_float_cfg("alt_kd"));
     Controller.write(buf);
-    sprintf(buf, "AZIT: P %8.1f I %8.1f D %8.1f\n", get_azi_kp(), get_azi_ki(), get_azi_kd());
+    sprintf(buf, "AZI: P %8.1f I %8.1f D %8.1f\n", get_float_cfg("azi_kp"), get_float_cfg("azi_ki"), get_float_cfg("azi_kd"));
     Controller.write(buf);
     return true;
 }
@@ -320,6 +323,8 @@ bool cmd_parse(char *buf){
         return cmd_set_geo(rest);
     }
     else if(strcmp(tok, "set") == 0){
+        //tok = strtok_r(NULL, delim, &rest);
+        //Serial.printf("%s\n", tok);
         return cmd_set(rest);
     }
     else if(strcmp(tok, "get-geo") == 0){
@@ -327,6 +332,10 @@ bool cmd_parse(char *buf){
     }
     else if(strcmp(tok, "pid-prm") == 0){
         return cmd_pid_prm();
+    }
+    else if(strcmp(tok, "quit") == 0){
+        Controller.stop();
+        return true;
     }
     else{
         return cmd_err(tok);
@@ -433,9 +442,11 @@ void loop() {
     uint16_t buf_last = 0;
     char cmd_buf[CMD_BUF_LEN];
 
+    //Serial.println("PORCODIO x");
+    //Serial.flush();
     if(Controller.available()){
-        buf_last = com_get_next_cmd(cmd_buf, buf_last, CMD_BUF_LEN);
-        if(buf_last == CMD_BUF_LEN){
+        buf_last = com_get_next_cmd(cmd_buf, buf_last, CMD_BUF_LEN-1);
+        if(buf_last == CMD_BUF_LEN-1){
             if( cmd_parse(cmd_buf) ){
                 Controller.write("[OK] ");
             }
@@ -451,13 +462,13 @@ void loop() {
         if(Controller.available()){
             Controller.flush();
             // Don't know why the one above does not work...
-            com_get_next_cmd(cmd_buf, 0, CMD_BUF_LEN);
+            com_get_next_cmd(cmd_buf, (uint16_t) 0, CMD_BUF_LEN-1);
         }
     }
     //get_time(&year, &month, &day, &hours, &minutes, &seconds);
     //sprintf(buf, "%d-%d-%d %d:%d:%.1f UTC\n", year, month, day, hours, minutes, seconds);
     //Serial.println(buf);
-    get_sun_vec(get_lon(), get_lat(), year, month, day, hours, minutes, seconds, sun);
+    get_sun_vec(get_float_cfg("lon"), get_float_cfg("lat"), year, month, day, hours, minutes, seconds, sun);
     //serial_log();
     //delay(1000); // Wait for 1 second
 }
@@ -593,14 +604,6 @@ void compute_frame_rotation(float *g, float *m, float **r){
     r[_z_][_z_] = up[_z_];
 }
 
-float get_lon(void){
-    return HGPrefs.getFloat("lon", DEFAULT_GEO_LON);;
-}
-
-float get_lat(void){
-    return HGPrefs.getFloat("lat", DEFAULT_GEO_LAT);
-}
-
 void get_sun_vec(float lon, float lat, 
                  int yr, int month, int day, int hour, int min, float sec, 
                  float *sun){         
@@ -712,29 +715,30 @@ void alt_motor_enable(void){
     alt_PID_enabled = true;
 }
 
-
-float get_azi_ki(void){
-    return HGPrefs.getFloat("azi_ki", DEFAULT_AZI_KI);;
+float get_float_default_cfg(const char *k){
+    if(strcmp(k, "azi_kp") == 0)
+        return DEFAULT_AZI_KP;
+    if(strcmp(k, "azi_kd") == 0)
+        return DEFAULT_AZI_KD;
+    if(strcmp(k, "azi_ki") == 0)
+        return DEFAULT_AZI_KI;
+    if(strcmp(k, "alt_kp") == 0)
+        return DEFAULT_ALT_KP;
+    if(strcmp(k, "alt_kd") == 0)
+        return DEFAULT_ALT_KD;
+    if(strcmp(k, "alt_ki") == 0)
+        return DEFAULT_ALT_KI;
+    if(strcmp(k, "lat") == 0)
+        return DEFAULT_GEO_LAT;
+    if(strcmp(k, "lon") == 0)
+        return DEFAULT_GEO_LON;
+    return 0.0;
 }
 
-float get_azi_kp(void){
-    return HGPrefs.getFloat("azi_ki", DEFAULT_AZI_KP);;
-}
-
-float get_azi_kd(void){
-    return HGPrefs.getFloat("azi_ki", DEFAULT_AZI_KD);;
-}
-
-float get_alt_kd(void){
-    return HGPrefs.getFloat("alt_kd", DEFAULT_ALT_KD);;
-}
-
-float get_alt_kp(void){
-    return HGPrefs.getFloat("alt_kp", DEFAULT_ALT_KP);;
-}
-
-float get_alt_ki(void){
-    return HGPrefs.getFloat("alt_ki", DEFAULT_ALT_KI);;
+float get_float_cfg(const char *k){
+    if(!HGPrefs.isKey(k))
+        HGPrefs.putFloat(k, get_float_default_cfg(k));
+    return HGPrefs.getFloat(k);
 }
 
 float read_azi_encoder(void){

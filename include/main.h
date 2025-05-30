@@ -49,15 +49,7 @@ void setup_rtc(void);
 
 void MPU_update_rot_frame(float **rf);
 
-float get_lat(void);
-float get_lon(void);
-
-float get_azi_ki(void);
-float get_azi_kp(void);
-float get_azi_kd(void);
-float get_alt_kd(void);
-float get_alt_kp(void);
-float get_alt_ki(void);
+float get_float_cfg(const char *);
 
 void update_time_from_NTP(void);
 void get_time(uint16_t *year, uint8_t *month, uint8_t *day, uint8_t *hours, uint8_t *minutes, float *seconds);
