@@ -25,10 +25,6 @@ Adafruit_MPU6050 mpu;
 Adafruit_Sensor *accelerometer, *gyroscope, *magnetometer;
 #endif
 
-// Rotation matrix initialized with identity
-float *rf[3], _rf[9] = {1., 0., 0.,
-                        0., 1., 0.,
-                        0., 0., 1.}; 
 bool MPU_ok = false, ROTF_ok=false;
 
 // Non volatile memory
@@ -231,29 +227,41 @@ bool cmd_reboot(void){
 bool cmd_test_rotframe(void){
     float m[] = {1.0, 1.0, 0.0};
     float g[] = {0.0, 0.0, -1.0};
-    float ray[] = {3.2, 5.7, 1.4};
-    float outray[3];
+    float ray[3], outray[3];
 
     char buf[256];
 
-    rf[0] = &(_rf[0]);
-    rf[1] = &(_rf[3]);
-    rf[2] = &(_rf[6]);
+    float r[3][3];
 
-    compute_frame_rotation(g, m, rf);
+    initialize_rotation_frame(g, m);
+    geo_to_absolute(10.0, 90.0, ray);
+    sprintf(buf, "\nABSOLU. VEC: %+6.4f %+6.4f %+6.4f\n", ray[0], ray[1], ray[2]);
+    Controller.write(buf);
+    internal_frame_get_rotation_matrix(r);
     Serial.printf("Done");
-    sprintf(buf, "%+6.4f %+6.4f %+6.4f\n%+6.4f %+6.4f %+6.4f\n%+6.4f %+6.4f %+6.4f\n", rf[0][0], rf[0][1], rf[0][2],
-                                                                                       rf[1][0], rf[1][1], rf[1][2], 
-                                                                                       rf[2][0], rf[2][1], rf[2][2]);
+    sprintf(buf, "%+6.4f %+6.4f %+6.4f\n%+6.4f %+6.4f %+6.4f\n%+6.4f %+6.4f %+6.4f\n", r[0][0], r[0][1], r[0][2],
+                                                                                       r[1][0], r[1][1], r[1][2], 
+                                                                                       r[2][0], r[2][1], r[2][2]);
     Controller.write(buf);
-    frame_transform(ray, rf, outray);
-    sprintf(buf, "%+6.4f %+6.4f %+6.4f\n", outray[0], outray[1], outray[2]);
+    absolute_to_internal_v(ray, outray);
+    sprintf(buf, "\nINTERNAL VEC: %+6.4f %+6.4f %+6.4f\n", outray[0], outray[1], outray[2]);
     Controller.write(buf);
 
-    float alt = vec_to_alt(outray) * 180./PI,
-          azi = vec_to_azi(outray) * 180./PI;
-    sprintf(buf, "AZI: %05.1f (N) ALT: %05.1f\n", 90.-azi, alt);
+    float alt = absolute_to_internal_alt(ray),
+          azi = absolute_to_internal_azi(ray);
+    sprintf(buf, "INTERNAL AZI: %05.1f\nINTERNAL ALT: %05.1f\n", azi, alt);
     Controller.write(buf);
+
+    float test_abs[3];
+    internal_to_absolute(alt, azi, test_abs);
+    sprintf(buf, "\nRECOMP. ABS. VEC: %+6.4f %+6.4f %+6.4f\n", test_abs[0], test_abs[1], test_abs[2]);
+    Controller.write(buf);
+
+    sprintf(buf, "\nRECOMP. GEO ALT: %+6.4f\n", internal_to_geo_alt(alt, azi));
+    Controller.write(buf);
+    sprintf(buf, "\nRECOMP. GEO AZI: %+6.4f\n", internal_to_geo_azi(alt, azi));
+    Controller.write(buf);
+    
     return true;
 }
 
@@ -343,9 +351,10 @@ bool cmd_set_ory(char *buf){
 
 bool cmd_mirror_log(void){
     char buf[256];
+    
     sprintf(buf, "SUN      : [%.4f %.4f %.4f]\n", sun[_x_], sun[_y_], sun[_z_]);
     Controller.write(buf);
-    sprintf(buf, "           [ALT: %.4f AZI: %.4f]\n", vec_to_alt(sun) * RAD2DEG, vec_to_azi(sun) * RAD2DEG);
+    sprintf(buf, "           [ALT: %.4f AZI: %.4f]\n", absolute_to_geo_alt(sun), absolute_to_geo_azi(sun));
     Controller.write(buf);
 
     sprintf(buf, "OUT-RAY  : [%.4f %.4f %.4f]\n", ory[_x_], ory[_y_], ory[_z_]);
@@ -355,7 +364,7 @@ bool cmd_mirror_log(void){
 
     sprintf(buf, "MIRROR   : [%.4f %.4f %.4f]\n", mir[_x_], mir[_y_], mir[_z_]);
     Controller.write(buf);
-    sprintf(buf, "           [ALT: %.4f AZI: %.4f]\n", vec_to_alt(mir) * RAD2DEG, vec_to_azi(mir) * RAD2DEG);
+    sprintf(buf, "           [ALT: %.4f AZI: %.4f]\n", absolute_to_geo_alt(mir), absolute_to_geo_azi(mir));
     Controller.write(buf);
 
 
@@ -541,22 +550,10 @@ void loop() {
         }
     }
 
+    get_time(&year, &month, &day, &hours, &minutes, &seconds);
     get_sun_vec(get_float_cfg("lon"), get_float_cfg("lat"), year, month, day, hours, minutes, seconds, sun);
     //serial_log();
     //delay(1000); // Wait for 1 second
-}
-
-void serial_log(){
-    char buf[256];
-    sprintf(buf, "SUN      : [%.4f %.4f %.4f]", sun[_x_], sun[_y_], sun[_z_]);
-    Serial.println(buf);
-    sprintf(buf, "MIRROR   : [%.4f %.4f %.4f]", sun[_x_], sun[_y_], sun[_z_]);
-    Serial.println(buf);
-    sprintf(buf, "OUT RAY  : [%.4f %.4f %.4f]", sun[_x_], sun[_y_], sun[_z_]);
-    Serial.println(buf);
-
-    String outs = timeClient.getFormattedDate();
-    Serial.println(outs);
 }
 
 void get_reflection_vec(float *in, float *mir, float *out){
@@ -584,88 +581,7 @@ void MPU_update_rot_frame(float **rf){
     float m[3], g[3];
     // TODO Read m and g from the sensor
     // ...
-    compute_frame_rotation(g, m, rf);
-}
-
-void frame_transform(float *i, float **r, float *o){
-    /*Given a vector apply to it the transformation r*/
-    o[_x_] = i[_x_] * r[_x_][_x_] + i[_y_] * r[_x_][_y_] + i[_z_] * r[_x_][_z_];
-    o[_y_] = i[_x_] * r[_y_][_x_] + i[_y_] * r[_y_][_y_] + i[_z_] * r[_y_][_z_];
-    o[_z_] = i[_x_] * r[_z_][_x_] + i[_y_] * r[_z_][_y_] + i[_z_] * r[_z_][_z_];
-}
-
-float vec_to_azi(float *i){
-    float norm = sqrt(i[_x_]*i[_x_] + i[_y_]*i[_y_]);
-    float azi = sc2a(i[_y_]/norm, i[_x_]/norm);
-    return azi;
-}
-
-float vec_to_alt(float *i){
-    float norm = sqrt(i[_x_]*i[_x_] + i[_y_]*i[_y_] + i[_z_]*i[_z_]);
-    float alt = sc2a(i[_z_]/norm, sqrt(i[_x_]*i[_x_] + i[_y_]*i[_y_])/norm);
-    return alt;
-}
-
-void altazi_to_vec(float alt, float azi, float *i){
-    i[_x_] = cos(PI/2.0 - azi) * cos(alt);
-    i[_y_] = sin(PI/2.0 - azi) * cos(alt);
-    i[_z_] = sin(alt);
-}
-
-void compute_frame_rotation(float *g, float *m, float **r){
-    /* Given the magnetic vector m and the gravity vector g, compute
-    the rotation matrix (r) from absolute frame (EST = x, NORD = y, UP = z)
-    to the internal frame.*/
-
-    float g_n[3], m_n[3], nord[3], up[3], est[3], norm;
-    
-    // Compute normalized g and m
-    norm = sqrt(g[0]*g[0] + g[1]*g[1] + g[2]*g[2]);
-    g[0] /= norm;
-    g[1] /= norm;
-    g[2] /= norm;
-
-    norm = sqrt(m[0]*m[0] + m[1]*m[1] + m[2]*m[2]);
-    m[0] /= norm;
-    m[1] /= norm;
-    m[2] /= norm;
-
-    // Compute nord vector as the projection of m on the 
-    // plane orthogonal to g
-    // nord = m - (g.m)g
-    float g_dot_m = g[_x_]*m[_x_] + g[_y_]*m[_y_] + g[_z_]*m[_z_];
-    nord[_x_] = m[_x_] - g_dot_m * g[_x_];
-    nord[_y_] = m[_y_] - g_dot_m * g[_y_];
-    nord[_z_] = m[_z_] - g_dot_m * g[_z_];
-    Serial.printf("NORD: %+6.4f %+6.4f %+6.4f\n", nord[_x_], nord[_y_], nord[_z_]);
-
-    // Normalize the nord
-    norm = sqrt(nord[0]*nord[0] + nord[1]*nord[1] + nord[2]*nord[2]);
-    nord[_x_] /= norm;
-    nord[_y_] /= norm;
-    nord[_z_] /= norm;
-
-    // Up is the inverse of gravity
-    up[_x_] = -g[_x_];
-    up[_y_] = -g[_y_];
-    up[_z_] = -g[_z_];
-
-    // Est is nord x up to give e right-handed system
-    est[_x_] = nord[_y_] * up[_z_] - nord[_z_] * up[_y_];
-    est[_y_] = nord[_z_] * up[_x_] - nord[_x_] * up[_z_];
-    est[_z_] = nord[_x_] * up[_y_] - nord[_y_] * up[_x_];
-
-    r[_x_][_x_] = est[_x_];
-    r[_x_][_y_] = nord[_x_];
-    r[_x_][_z_] = up[_x_];
-    
-    r[_y_][_x_] = est[_y_];
-    r[_y_][_y_] = nord[_y_];
-    r[_y_][_z_] = up[_y_];
-
-    r[_z_][_x_] = est[_z_];
-    r[_z_][_y_] = nord[_z_];
-    r[_z_][_z_] = up[_z_];
+    initialize_rotation_frame(g, m);
 }
 
 void get_sun_vec(float lon, float lat, 
@@ -695,13 +611,15 @@ void get_sun_vec(float lon, float lat,
     struct STPosition pos;
     SolTrack(time, loc, &pos, useDegrees, useNorthEqualsZero, computeRefrEquatorial, computeDistance);
 
-    float alt = pos.altitudeRefract / R2D,
+    float alt =  pos.altitudeRefract/ R2D,
           az  = pos.azimuthRefract / R2D;
-    //Serial.printf
-    sun[_x_] = cos(PI/2.0 - az) * cos(alt);
+
+    //Serial.printf("SUN alt %f azi %f\n", pos.altitudeRefract, pos.azimuthRefract);
+    /*sun[_x_] = cos(PI/2.0 - az) * cos(alt);
     sun[_y_] = sin(PI/2.0 - az) * cos(alt);
-    sun[_z_] = sin(alt);
-    //altazi_to_vec(alt, az, sun);
+    sun[_z_] = sin(alt);*/
+    //Serial.printf("Sun vector %f %f %f\n", sun[_x_], sun[_y_], sun[_z_]);
+    geo_to_absolute(pos.altitudeRefract, pos.azimuthRefract, sun);
 }
 
 void set_alt_motor_speed(int8_t speed){

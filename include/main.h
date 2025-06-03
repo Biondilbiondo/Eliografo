@@ -55,14 +55,6 @@ void get_time(uint16_t *year, uint8_t *month, uint8_t *day, uint8_t *hours, uint
 void get_time_RTC(uint16_t *year, uint8_t *month, uint8_t *day, uint8_t *hours, uint8_t *minutes, float *seconds);
 void get_time_NTP(uint16_t *year, uint8_t *month, uint8_t *day, uint8_t *hours, uint8_t *minutes, float *seconds);
 
-void serial_log();
-
-void compute_frame_rotation(float *g, float *m, float **r);
-void frame_transform(float *, float **, float *);
-float vec_to_azi(float *i);
-float vec_to_alt(float *i);
-void altazi_to_vec(float, float, float *);
-float sc2a(float sine, float cosine);
 void get_reflection_vec(float *in, float *mir, float *out);
 void get_normal_vec(float *in, float *out, float *mir);
 void get_sun_vec(float lon, float lat, 
