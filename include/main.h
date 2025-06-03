@@ -1,4 +1,5 @@
 #include "configs.h"
+#include "frames.h"
 
 #include <Arduino.h>
 // WiFi connection
@@ -33,17 +34,11 @@
 #define MOTOR_PWM_RES 8
 #define MOTOR_PWM_FREQ 500
 
-#define _x_ 0
-#define _y_ 1
-#define _z_ 2
 
 #define CMD_BUF_LEN 256
 
 #define PREF_RW_MODE false
 #define PREF_RO_MODE true
-
-#define DEG2RAD (PI/180.0)
-#define RAD2DEG (180.0/PI)
 
 
 void setup_wifi();

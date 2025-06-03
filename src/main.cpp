@@ -337,7 +337,7 @@ bool cmd_factory_reset(void){
 bool cmd_set_ory(char *buf){
     float alt, azi;
     sscanf(buf, "%f %f", &alt, &azi);
-    altazi_to_vec(alt*DEG2RAD, azi*DEG2RAD, ory);
+    geo_to_absolute(alt, azi, ory);
     return true;
 }
 
@@ -350,7 +350,7 @@ bool cmd_mirror_log(void){
 
     sprintf(buf, "OUT-RAY  : [%.4f %.4f %.4f]\n", ory[_x_], ory[_y_], ory[_z_]);
     Controller.write(buf);
-    sprintf(buf, "           [ALT: %.4f AZI: %.4f]\n", vec_to_alt(ory) * RAD2DEG, vec_to_azi(ory) * RAD2DEG);
+    sprintf(buf, "           [ALT: %.4f AZI: %.4f]\n", absolute_to_geo_alt(ory), absolute_to_geo_azi(ory));
     Controller.write(buf);
 
     sprintf(buf, "MIRROR   : [%.4f %.4f %.4f]\n", mir[_x_], mir[_y_], mir[_z_]);
@@ -418,7 +418,6 @@ bool cmd_parse(char *buf){
     else{
         return cmd_err(tok);
     }
-
 }
 
 void check_com_connections(void){
@@ -613,21 +612,6 @@ void altazi_to_vec(float alt, float azi, float *i){
     i[_z_] = sin(alt);
 }
 
-float sc2a(float sine, float cosine){
-    float angle;
-    if(abs(sine) > abs(cosine)){
-        angle = asin(sine);
-        if(cosine < 0)
-            angle = PI/2 - angle;
-    }
-    else{
-        angle = acos(cosine);
-        if(sine < 0)
-            angle = -angle;
-    }
-    return angle;
-}
-
 void compute_frame_rotation(float *g, float *m, float **r){
     /* Given the magnetic vector m and the gravity vector g, compute
     the rotation matrix (r) from absolute frame (EST = x, NORD = y, UP = z)
@@ -713,11 +697,11 @@ void get_sun_vec(float lon, float lat,
 
     float alt = pos.altitudeRefract / R2D,
           az  = pos.azimuthRefract / R2D;
-      
-    /*sun[_x_] = cos(PI/2.0 - az) * cos(alt);
+    //Serial.printf
+    sun[_x_] = cos(PI/2.0 - az) * cos(alt);
     sun[_y_] = sin(PI/2.0 - az) * cos(alt);
-    sun[_z_] = sin(alt);*/
-    altazi_to_vec(alt, az, sun);
+    sun[_z_] = sin(alt);
+    //altazi_to_vec(alt, az, sun);
 }
 
 void set_alt_motor_speed(int8_t speed){
