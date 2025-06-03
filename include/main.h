@@ -14,6 +14,7 @@
 #include <math.h>
 //Non volatile memory
 #include <Preferences.h>
+#include <nvs_flash.h>
 
 // MPU gyro accell sensor
 #ifdef USE_MPU6050
@@ -41,6 +42,9 @@
 #define PREF_RW_MODE false
 #define PREF_RO_MODE true
 
+#define DEG2RAD (PI/180.0)
+#define RAD2DEG (180.0/PI)
+
 
 void setup_wifi();
 
@@ -62,6 +66,7 @@ void compute_frame_rotation(float *g, float *m, float **r);
 void frame_transform(float *, float **, float *);
 float vec_to_azi(float *i);
 float vec_to_alt(float *i);
+void altazi_to_vec(float, float, float *);
 float sc2a(float sine, float cosine);
 void get_reflection_vec(float *in, float *mir, float *out);
 void get_normal_vec(float *in, float *out, float *mir);

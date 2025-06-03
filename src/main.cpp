@@ -267,17 +267,6 @@ bool cmd_set_geo(char *buf){
     return true;
 }
 
-bool cmd_set(char *buf){
-    float val;
-    char *key, *rest;
-
-    key = strtok_r(NULL, " \n\r", &buf);
-    rest = strtok_r(NULL, "\r\n", &buf);
-    sscanf(rest, "%f", &val);
-    HGPrefs.putFloat(key, val);
-    return true;
-}
-
 bool cmd_get_geo(void){
     float lat = get_float_cfg("lat"), 
           lon = get_float_cfg("lon");
@@ -297,6 +286,85 @@ bool cmd_pid_prm(void){
     return true;
 }
 
+bool cfg_key_exists(const char *key){
+    return HGPrefs.isKey(key);
+}
+
+bool cmd_set(char *buf){
+    float val;
+    char *key, *rest;
+
+    key = strtok_r(NULL, " \n\r", &buf);
+    rest = strtok_r(NULL, "\r\n", &buf);
+    sscanf(rest, "%f", &val);
+    if(cfg_key_exists(key)){
+        HGPrefs.putFloat(key, val);
+        return true;
+    }
+    else{
+        char obuf[32];
+        sprintf(obuf, "Key %s not found.\n", key);
+        Controller.write(obuf);
+        return false;
+    }
+}
+
+bool cmd_get(char *buf){
+    float val;
+    char *key;
+    char obuf[32];
+    
+    key = strtok_r(NULL, " \n\r", &buf);
+    if(cfg_key_exists(key)){
+        val = get_float_cfg(key);
+        sprintf(obuf, "%15s = %10g\n", key, val);
+        Controller.write(obuf);
+        return true;
+    }
+    else{
+        sprintf(obuf, "Key %s not found.\n", key);
+        Controller.write(obuf);
+        return false;
+    }
+}
+
+bool cmd_factory_reset(void){
+    nvs_flash_erase();
+    nvs_flash_init();
+    return cmd_reboot();
+}
+
+bool cmd_set_ory(char *buf){
+    float alt, azi;
+    sscanf(buf, "%f %f", &alt, &azi);
+    altazi_to_vec(alt*DEG2RAD, azi*DEG2RAD, ory);
+    return true;
+}
+
+bool cmd_mirror_log(void){
+    char buf[256];
+    sprintf(buf, "SUN      : [%.4f %.4f %.4f]\n", sun[_x_], sun[_y_], sun[_z_]);
+    Controller.write(buf);
+    sprintf(buf, "           [ALT: %.4f AZI: %.4f]\n", vec_to_alt(sun) * RAD2DEG, vec_to_azi(sun) * RAD2DEG);
+    Controller.write(buf);
+
+    sprintf(buf, "OUT-RAY  : [%.4f %.4f %.4f]\n", ory[_x_], ory[_y_], ory[_z_]);
+    Controller.write(buf);
+    sprintf(buf, "           [ALT: %.4f AZI: %.4f]\n", vec_to_alt(ory) * RAD2DEG, vec_to_azi(ory) * RAD2DEG);
+    Controller.write(buf);
+
+    sprintf(buf, "MIRROR   : [%.4f %.4f %.4f]\n", mir[_x_], mir[_y_], mir[_z_]);
+    Controller.write(buf);
+    sprintf(buf, "           [ALT: %.4f AZI: %.4f]\n", vec_to_alt(mir) * RAD2DEG, vec_to_azi(mir) * RAD2DEG);
+    Controller.write(buf);
+
+
+    String outs = timeClient.getFormattedDate();
+    sprintf(buf, "TIME     : %s\n", outs.c_str());
+    Controller.write(buf);
+    return true;
+}
+
 bool cmd_parse(char *buf){
     char *tok, *rest;
     const char *delim = " \n\r";
@@ -305,6 +373,9 @@ bool cmd_parse(char *buf){
 
     if(tok == NULL){
         return true;
+    }
+    else if(strcmp(tok, "set-ory") == 0){
+        return cmd_set_ory(rest);
     }
     else if(strcmp(tok, "id") == 0){
         return cmd_id();
@@ -323,15 +394,22 @@ bool cmd_parse(char *buf){
         return cmd_set_geo(rest);
     }
     else if(strcmp(tok, "set") == 0){
-        //tok = strtok_r(NULL, delim, &rest);
-        //Serial.printf("%s\n", tok);
         return cmd_set(rest);
     }
     else if(strcmp(tok, "get-geo") == 0){
         return cmd_get_geo();
     }
+    else if(strcmp(tok, "get") == 0){
+        return cmd_get(rest);
+    }
     else if(strcmp(tok, "pid-prm") == 0){
         return cmd_pid_prm();
+    }
+    else if(strcmp(tok, "factory-reset") == 0){
+        return cmd_factory_reset();
+    }
+    else if(strcmp(tok, "mirror-log") == 0){
+        return cmd_mirror_log();
     }
     else if(strcmp(tok, "quit") == 0){
         Controller.stop();
@@ -442,8 +520,6 @@ void loop() {
     uint16_t buf_last = 0;
     char cmd_buf[CMD_BUF_LEN];
 
-    //Serial.println("PORCODIO x");
-    //Serial.flush();
     if(Controller.available()){
         buf_last = com_get_next_cmd(cmd_buf, buf_last, CMD_BUF_LEN-1);
         if(buf_last == CMD_BUF_LEN-1){
@@ -465,9 +541,7 @@ void loop() {
             com_get_next_cmd(cmd_buf, (uint16_t) 0, CMD_BUF_LEN-1);
         }
     }
-    //get_time(&year, &month, &day, &hours, &minutes, &seconds);
-    //sprintf(buf, "%d-%d-%d %d:%d:%.1f UTC\n", year, month, day, hours, minutes, seconds);
-    //Serial.println(buf);
+
     get_sun_vec(get_float_cfg("lon"), get_float_cfg("lat"), year, month, day, hours, minutes, seconds, sun);
     //serial_log();
     //delay(1000); // Wait for 1 second
@@ -531,6 +605,12 @@ float vec_to_alt(float *i){
     float norm = sqrt(i[_x_]*i[_x_] + i[_y_]*i[_y_] + i[_z_]*i[_z_]);
     float alt = sc2a(i[_z_]/norm, sqrt(i[_x_]*i[_x_] + i[_y_]*i[_y_])/norm);
     return alt;
+}
+
+void altazi_to_vec(float alt, float azi, float *i){
+    i[_x_] = cos(PI/2.0 - azi) * cos(alt);
+    i[_y_] = sin(PI/2.0 - azi) * cos(alt);
+    i[_z_] = sin(alt);
 }
 
 float sc2a(float sine, float cosine){
@@ -634,9 +714,10 @@ void get_sun_vec(float lon, float lat,
     float alt = pos.altitudeRefract / R2D,
           az  = pos.azimuthRefract / R2D;
       
-    sun[_x_] = cos(PI/2.0 - az) * cos(alt);
+    /*sun[_x_] = cos(PI/2.0 - az) * cos(alt);
     sun[_y_] = sin(PI/2.0 - az) * cos(alt);
-    sun[_z_] = sin(alt);
+    sun[_z_] = sin(alt);*/
+    altazi_to_vec(alt, az, sun);
 }
 
 void set_alt_motor_speed(int8_t speed){
@@ -736,7 +817,7 @@ float get_float_default_cfg(const char *k){
 }
 
 float get_float_cfg(const char *k){
-    if(!HGPrefs.isKey(k))
+    if(!cfg_key_exists(k))
         HGPrefs.putFloat(k, get_float_default_cfg(k));
     return HGPrefs.getFloat(k);
 }
