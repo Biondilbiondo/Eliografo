@@ -1,5 +1,5 @@
-#ifndef _PINS_H_
-#define _PINS_H_
+#ifndef _pins_h_
+#define _pins_h_
 // Corresponds to EN1
 #define ALT_MOTOR_PWM 2
 #define ALT_MOTOR_PWM_CH 0

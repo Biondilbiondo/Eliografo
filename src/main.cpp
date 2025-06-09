@@ -214,7 +214,7 @@ bool cmd_time(void){
     uint8_t m,d, h, mi;
     float s;
     get_time(&y, &m, &d, &h, &mi, &s);
-    sprintf(buf, "%02d:%02d:%06.3f %02d-%02d-%04d UTC\n", h, mi, s, d, m, y);
+    sprintf(buf, "%04d-%02d-%02dT%02d:%02d:%06.4fZ\n", y, m, d, h, mi, s);
     Controller.write(buf);
     return true;
 }
@@ -280,7 +280,7 @@ bool cmd_get_geo(void){
           lon = get_float_cfg("lon");
 
     char buf[32];
-    sprintf(buf, "LAT: %08.4f, LON: %08.4f\n", lat, lon);
+    sprintf(buf, "LAT: %08.4f LON: %08.4f\n", lat, lon);
     Controller.write(buf);
     return true;
 }
@@ -346,30 +346,45 @@ bool cmd_set_ory(char *buf){
     float alt, azi;
     sscanf(buf, "%f %f", &alt, &azi);
     geo_to_absolute(alt, azi, ory);
+    // TODO
     return true;
 }
 
 bool cmd_mirror_log(void){
     char buf[256];
     
-    sprintf(buf, "SUN      : [%.4f %.4f %.4f]\n", sun[_x_], sun[_y_], sun[_z_]);
+    sprintf(buf, "SUN      : %.4f %.4f %.4f\n", sun[_x_], sun[_y_], sun[_z_]);
     Controller.write(buf);
-    sprintf(buf, "           [ALT: %.4f AZI: %.4f]\n", absolute_to_geo_alt(sun), absolute_to_geo_azi(sun));
-    Controller.write(buf);
-
-    sprintf(buf, "OUT-RAY  : [%.4f %.4f %.4f]\n", ory[_x_], ory[_y_], ory[_z_]);
-    Controller.write(buf);
-    sprintf(buf, "           [ALT: %.4f AZI: %.4f]\n", absolute_to_geo_alt(ory), absolute_to_geo_azi(ory));
+    sprintf(buf, "           ALT: %.4f AZI: %.4f\n", absolute_to_geo_alt(sun), absolute_to_geo_azi(sun));
     Controller.write(buf);
 
-    sprintf(buf, "MIRROR   : [%.4f %.4f %.4f]\n", mir[_x_], mir[_y_], mir[_z_]);
+    sprintf(buf, "OUT-RAY  : %.4f %.4f %.4f\n", ory[_x_], ory[_y_], ory[_z_]);
     Controller.write(buf);
-    sprintf(buf, "           [ALT: %.4f AZI: %.4f]\n", absolute_to_geo_alt(mir), absolute_to_geo_azi(mir));
+    sprintf(buf, "           ALT: %.4f AZI: %.4f\n", absolute_to_geo_alt(ory), absolute_to_geo_azi(ory));
+    Controller.write(buf);
+
+    sprintf(buf, "MIRROR   : %.4f %.4f %.4f\n", mir[_x_], mir[_y_], mir[_z_]);
+    Controller.write(buf);
+    sprintf(buf, "           ALT: %.4f AZI: %.4f\n", absolute_to_geo_alt(mir), absolute_to_geo_azi(mir));
     Controller.write(buf);
 
 
     String outs = timeClient.getFormattedDate();
     sprintf(buf, "TIME     : %s\n", outs.c_str());
+    Controller.write(buf);
+    return true;
+}
+
+bool cmd_current_position(void){
+    float internal_alt = read_alt_encoder(),
+          internal_azi = read_azi_encoder();
+
+    char buf[256];
+    
+    sprintf(buf, "INTERNAL ALT %.4f AZI %.4f\n", internal_alt, internal_azi);
+    Controller.write(buf);
+    sprintf(buf, "ABSOLUTE ALT %.4f AZI %.4f\n", internal_to_geo_alt(internal_alt, internal_azi), 
+                                                 internal_to_geo_azi(internal_alt, internal_azi));
     Controller.write(buf);
     return true;
 }
@@ -423,6 +438,9 @@ bool cmd_parse(char *buf){
     else if(strcmp(tok, "quit") == 0){
         Controller.stop();
         return true;
+    }
+    else if(strcmp(tok, "current-position") == 0){
+        return cmd_current_position();
     }
     else{
         return cmd_err(tok);
@@ -725,15 +743,19 @@ float get_float_cfg(const char *k){
 }
 
 float read_azi_encoder(void){
-    uint32_t mv = analogReadMilliVolts(AZI_ENCODER);
-    // This should be elaborated to return radians 
-    return mv / 3300 * 2 * PI; // Just to put something here
+    // uint32_t mv = analogReadMilliVolts(AZI_ENCODER);
+    uint32_t mv = 1800;
+    // This is actual value in internal frame;
+    // NOTE: it should be in degrees and increasing ccw
+    return 1.0 * mv / 3300 * 2 * PI; // Just to put something here
 }
 
 float read_alt_encoder(void){
-    uint32_t mv = analogReadMilliVolts(ALT_ENCODER);
-    // This should be elaborated to return radians 
-    return mv / 3300 * 2 * PI; // Just to put something here
+    // uint32_t mv = analogReadMilliVolts(ALT_ENCODER);
+    uint32_t mv = 1800;
+    // This is actual value in internal frame;
+    // NOTE: it should be in degrees and increasing rotating upward
+    return 1.0 * mv / 3300 * 2 * PI; // Just to put something here
 }
 
 void IRAM_ATTR PID_isr(void){

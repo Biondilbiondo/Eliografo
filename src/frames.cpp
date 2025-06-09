@@ -18,6 +18,7 @@ There are different frames for different pourposes:
       righte endend frame; Coordinates are generaly exposed as Alt/Azi angles in degrees. 
 */
 
+// TODO implement limits and check
 // Rotation matrix initialized with identity this matrix is the rotation from absolute
 // to internal frame.
 float r[3][3] = {{1., 0., 0.},
