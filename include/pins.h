@@ -9,7 +9,7 @@
 #define ALT_MOTOR_DIR2 32
 //uncomment below to reverse motor direction
 //#define ALT_REVERSED
-#define ALT_ENCODER 39
+#define ALT_ENCODER 34
 
 // Corresponds to EN2
 #define AZI_MOTOR_PWM 0
@@ -20,7 +20,7 @@
 #define AZI_MOTOR_DIR2 27
 //uncomment below to reverse motor direction
 //#define AZI_REVERSED
-#define AZI_ENCODER 36
+#define AZI_ENCODER 35
 
 #define I2C_SCL 22
 #define I2C_SDA 21 

@@ -83,14 +83,19 @@ void setup_accell_compass_MPU9250(void){
 void setup_motors(){
     pinMode(ALT_MOTOR_DIR1, OUTPUT);
     pinMode(ALT_MOTOR_DIR2, OUTPUT);
+    pinMode(ALT_MOTOR_PWM, OUTPUT);
+
     ledcSetup(ALT_MOTOR_PWM_CH, MOTOR_PWM_FREQ, MOTOR_PWM_RES);
     ledcAttachPin(ALT_MOTOR_PWM, ALT_MOTOR_PWM_CH);
 
     pinMode(AZI_MOTOR_DIR1, OUTPUT);
     pinMode(AZI_MOTOR_DIR2, OUTPUT);
+    pinMode(AZI_MOTOR_PWM, OUTPUT);
+
     ledcSetup(AZI_MOTOR_PWM_CH, MOTOR_PWM_FREQ, MOTOR_PWM_RES);
     ledcAttachPin(AZI_MOTOR_PWM, AZI_MOTOR_PWM_CH);
 
+/*
     azi_encoder_val = read_azi_encoder();
     alt_encoder_val = read_alt_encoder();
     azi_setpoint = azi_encoder_val;
@@ -115,7 +120,7 @@ void setup_motors(){
     timerAttachInterrupt(PID_timer_cfg, &PID_isr, true);
     timerAlarmWrite(PID_timer_cfg, PID_INTERRUPT_MS, true);
     timerAlarmEnable(PID_timer_cfg);
-
+*/
     azi_motor_standby();
     alt_motor_standby();
 }
@@ -389,6 +394,38 @@ bool cmd_current_position(void){
     return true;
 }
 
+bool cmd_test_motor(int8_t speed){
+    char buf[256];
+    
+    Controller.write("ALT ENABLE\n");
+    alt_motor_enable();
+    sleep(1);
+    Controller.write("ALT FWD\n");
+    set_alt_motor_speed(120);
+    sleep(2);
+    Controller.write("ALT REV\n");
+    set_alt_motor_speed(-120);
+    sleep(2);
+    Controller.write("ALT STANDBY\n");
+    alt_motor_standby();
+    sleep(2);
+
+    Controller.write("AZI ENABLE\n");
+    azi_motor_enable();
+    sleep(1);
+    Controller.write("AZI FWD\n");
+    set_azi_motor_speed(120);
+    sleep(2);
+    Controller.write("AZI REV\n");
+    set_azi_motor_speed(-120);
+    sleep(2);
+    Controller.write("AZI STANDBY\n");
+    azi_motor_standby();
+    sleep(2);
+
+    return true;
+}
+
 bool cmd_parse(char *buf){
     char *tok, *rest;
     const char *delim = " \n\r";
@@ -441,6 +478,9 @@ bool cmd_parse(char *buf){
     }
     else if(strcmp(tok, "current-position") == 0){
         return cmd_current_position();
+    }
+    else if(strcmp(tok, "test-motors") == 0){
+        return cmd_test_motor(128);
     }
     else{
         return cmd_err(tok);
@@ -643,21 +683,21 @@ void get_sun_vec(float lon, float lat,
 void set_alt_motor_speed(int8_t speed){
     if(speed > 0){
         // Forward motion
-        ledcWrite(ALT_MOTOR_PWM, 0);
+        ledcWrite(ALT_MOTOR_PWM_CH, 0);
         digitalWrite(ALT_MOTOR_DIR1, LOW);
         digitalWrite(ALT_MOTOR_DIR2, HIGH);
-        ledcWrite(ALT_MOTOR_PWM, abs(speed)*2);
+        ledcWrite(ALT_MOTOR_PWM_CH, abs(speed)*2);
     }
     else if(speed < 0){
         // Bakward motion
-        ledcWrite(ALT_MOTOR_PWM, 0);
+        ledcWrite(ALT_MOTOR_PWM_CH, 0);
         digitalWrite(ALT_MOTOR_DIR1, HIGH);
         digitalWrite(ALT_MOTOR_DIR2, LOW);
-        ledcWrite(ALT_MOTOR_PWM, abs(speed)*2);
+        ledcWrite(ALT_MOTOR_PWM_CH, abs(speed)*2);
     }
     else{
         // Blocked 
-        ledcWrite(ALT_MOTOR_PWM, 0);
+        ledcWrite(ALT_MOTOR_PWM_CH, 0);
         digitalWrite(ALT_MOTOR_DIR1, LOW);
         digitalWrite(ALT_MOTOR_DIR2, LOW);
         ledcWrite(ALT_MOTOR_PWM, 255);
@@ -667,21 +707,21 @@ void set_alt_motor_speed(int8_t speed){
 void set_azi_motor_speed(int8_t speed){
     if(speed > 0){
         // Forward motion
-        ledcWrite(AZI_MOTOR_PWM, 0);
+        ledcWrite(AZI_MOTOR_PWM_CH, 0);
         digitalWrite(AZI_MOTOR_DIR1, LOW);
         digitalWrite(AZI_MOTOR_DIR2, HIGH);
-        ledcWrite(AZI_MOTOR_PWM, abs(speed)*2);
+        ledcWrite(AZI_MOTOR_PWM_CH, abs(speed)*2);
     }
     else if(speed < 0){
         // Bakward motion
-        ledcWrite(AZI_MOTOR_PWM, 0);
+        ledcWrite(AZI_MOTOR_PWM_CH, 0);
         digitalWrite(AZI_MOTOR_DIR1, HIGH);
         digitalWrite(AZI_MOTOR_DIR2, LOW);
-        ledcWrite(AZI_MOTOR_PWM, abs(speed)*2);
+        ledcWrite(AZI_MOTOR_PWM_CH, abs(speed)*2);
     }
     else{
         // Blocked 
-        ledcWrite(AZI_MOTOR_PWM, 0);
+        ledcWrite(AZI_MOTOR_PWM_CH, 0);
         digitalWrite(AZI_MOTOR_DIR1, LOW);
         digitalWrite(AZI_MOTOR_DIR2, LOW);
         ledcWrite(AZI_MOTOR_PWM, 255);
@@ -690,14 +730,14 @@ void set_azi_motor_speed(int8_t speed){
 
 void azi_motor_standby(void){
     azi_PID_enabled = false;
-    ledcWrite(AZI_MOTOR_PWM, 0);
+    ledcWrite(AZI_MOTOR_PWM_CH, 0);
     digitalWrite(AZI_MOTOR_DIR1, LOW);
     digitalWrite(AZI_MOTOR_DIR2, LOW);
 }
 
 void alt_motor_standby(void){
     alt_PID_enabled = false;
-    ledcWrite(ALT_MOTOR_PWM, 0);
+    ledcWrite(ALT_MOTOR_PWM_CH, 0);
     digitalWrite(ALT_MOTOR_DIR1, LOW);
     digitalWrite(ALT_MOTOR_DIR2, LOW);
 }

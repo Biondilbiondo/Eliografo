@@ -32,7 +32,7 @@
 
 // PWM definitions
 #define MOTOR_PWM_RES 8
-#define MOTOR_PWM_FREQ 500
+#define MOTOR_PWM_FREQ 1000
 
 
 #define CMD_BUF_LEN 256
