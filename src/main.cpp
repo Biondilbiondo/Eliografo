@@ -482,6 +482,38 @@ bool cmd_parse(char *buf){
     else if(strcmp(tok, "test-motors") == 0){
         return cmd_test_motor(128);
     }
+    else if(strcmp(tok, "alt-fwd") == 0){
+        Controller.write("ALT FWD\n");
+        set_alt_motor_speed(120);
+        sleep(2);
+        Controller.write("ALT STANDBY\n");
+        alt_motor_standby();
+        return true;
+    }
+    else if(strcmp(tok, "alt-bck") == 0){
+        Controller.write("ALT REV\n");
+        set_alt_motor_speed(-120);
+        sleep(2);
+        Controller.write("ALT STANDBY\n");
+        alt_motor_standby();
+        return true;
+    }
+    else if(strcmp(tok, "azi-fwd") == 0){
+        Controller.write("AZI FWD\n");
+        set_azi_motor_speed(120);
+        sleep(2);
+        Controller.write("AZI STANDBY\n");
+        azi_motor_standby();
+        return true;
+    }
+    else if(strcmp(tok, "azi-bck") == 0){
+        Controller.write("AZI REV\n");
+        set_azi_motor_speed(-120);
+        sleep(2);
+        Controller.write("AZI STANDBY\n");
+        azi_motor_standby();
+        return true;
+    }
     else{
         return cmd_err(tok);
     }
@@ -773,6 +805,10 @@ float get_float_default_cfg(const char *k){
         return DEFAULT_GEO_LAT;
     if(strcmp(k, "lon") == 0)
         return DEFAULT_GEO_LON;
+    if(strcmp(k, "alte0") == 0)
+        return DEFAULT_ALT_ENCODER_ZERO;
+    if(strcmp(k, "azie0") == 0)
+        return DEFAULT_AZI_ENCODER_ZERO;
     return 0.0;
 }
 
@@ -783,19 +819,27 @@ float get_float_cfg(const char *k){
 }
 
 float read_azi_encoder(void){
-    // uint32_t mv = analogReadMilliVolts(AZI_ENCODER);
-    uint32_t mv = 1800;
+    uint32_t mv = analogReadMilliVolts(AZI_ENCODER);
     // This is actual value in internal frame;
     // NOTE: it should be in degrees and increasing ccw
-    return 1.0 * mv / 3300 * 2 * PI; // Just to put something here
+    float f_v = (float) (mv) * (ENCODER_R1 + ENCODER_R2) / ENCODER_R2 ; // Real tension value
+    f_v /= 1000.0;
+    float deg = f_v * ENCODER_VOLT_TO_DEG - get_float_cfg("azie0");
+    return deg; // Just to put something here
 }
 
 float read_alt_encoder(void){
-    // uint32_t mv = analogReadMilliVolts(ALT_ENCODER);
-    uint32_t mv = 1800;
+    uint32_t mv = analogReadMilliVolts(ALT_ENCODER);
     // This is actual value in internal frame;
     // NOTE: it should be in degrees and increasing rotating upward
-    return 1.0 * mv / 3300 * 2 * PI; // Just to put something here
+    char buf[256];
+    
+    sprintf(buf, "ADC value %d mv\n", mv);
+    Controller.write(buf);
+    float f_v = (float) (mv) * (ENCODER_R1 + ENCODER_R2) / ENCODER_R2 ; // Real tension value
+    f_v /= 1000.0;
+    float deg = f_v * ENCODER_VOLT_TO_DEG - get_float_cfg("alte0");
+    return deg; // Just to put something here
 }
 
 void IRAM_ATTR PID_isr(void){

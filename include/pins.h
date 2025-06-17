@@ -10,6 +10,10 @@
 //uncomment below to reverse motor direction
 //#define ALT_REVERSED
 #define ALT_ENCODER 34
+// SIG - R1 - R2 - GND
+#define ENCODER_R1 1.0
+#define ENCODER_R2 2.0
+#define ENCODER_VOLT_TO_DEG (360.0/5.0)
 
 // Corresponds to EN2
 #define AZI_MOTOR_PWM 0
