@@ -30,13 +30,85 @@ bool MPU_ok = false, ROTF_ok=false;
 // Non volatile memory
 Preferences HGPrefs; 
 
+class ringPID{
+    private:
+        // Input should be 0-360
+        float *input;
+        float *output;
+        float *setpoint;
+
+        float ki, kp, kd;
+        float outmax, outmin;
+        float min_error;
+        uint32_t lastT;
+
+    public:
+        ringPID(float *In, float *Out, float *SetP){
+            set_PID_vars(In, Out, SetP);
+            min_error = 0.0;
+        }
+
+        void set_PID_params(float Kp, float Ki, float Kd, float OutMin, float OutMax, float MinErr){
+            kp = Kp;
+            ki = Ki;
+            kd = Kd;
+            outmax = OutMax;
+            outmin = OutMin;
+            min_error = MinErr;
+        }
+
+        void set_PID_vars(float *In, float *Out, float *SetP){
+            input = In;
+            output = Out;
+            setpoint = SetP;
+        }
+
+        void update(void){
+            uint32_t now = micros();
+            uint32_t timeChange = (now - lastT);
+            char outm[256];
+
+
+            float error = (*setpoint) - (*input);
+            if(error > 180.0){
+                error -= 360.0;
+            }
+            if(abs(error) < min_error){
+                *output = 0.0;
+                return;
+            }
+
+            //sprintf(outm, "SETP %f - INP %f = ERR %f\n", *setpoint, *input, error);
+            //Controller.write(outm);
+            //Serial.print(outm);
+            sprintf(outm, "ERR %f MIN ERR %f\n", error, min_error);
+            //Controller.write(outm);
+            Serial.print(outm);
+            float p_comp = kp * error;
+            float i_comp = 0.0;
+            float d_comp = 0.0;
+
+            *output = p_comp + i_comp + d_comp;
+            if(*output > outmax) *output = outmax;
+            if(*output < outmin) *output = outmin;
+
+
+            //sprintf(outm, "ERROR %f P %f D %f I %f OUT %f\n", error, p_comp, d_comp, i_comp, *output);
+            //Controller.write(outm);
+            Serial.print(outm);
+
+            lastT=now;
+        }
+};
+
 // Control variables
 float azi_setpoint, alt_setpoint,
       azi_encoder_val, alt_encoder_val,
-      azi_motor_speed, alt_motor_speed;
+      azi_motor_speed, alt_motor_speed,
+      alt_encoder_zero, azi_encoder_zero;
 
-QuickPID aziPID(&azi_encoder_val, &azi_motor_speed, &azi_setpoint);
-QuickPID altPID(&alt_encoder_val, &alt_motor_speed, &alt_setpoint);
+ringPID aziPID(&azi_encoder_val, &azi_motor_speed, &azi_setpoint);
+ringPID altPID(&alt_encoder_val, &alt_motor_speed, &alt_setpoint);
 bool azi_PID_enabled = false, alt_PID_enabled = false;
 hw_timer_t *PID_timer_cfg = NULL;
 
@@ -95,32 +167,31 @@ void setup_motors(){
     ledcSetup(AZI_MOTOR_PWM_CH, MOTOR_PWM_FREQ, MOTOR_PWM_RES);
     ledcAttachPin(AZI_MOTOR_PWM, AZI_MOTOR_PWM_CH);
 
-/*
+    azi_encoder_zero = get_float_cfg("azie0");
+    alt_encoder_zero = get_float_cfg("alte0");
+
     azi_encoder_val = read_azi_encoder();
     alt_encoder_val = read_alt_encoder();
     azi_setpoint = azi_encoder_val;
     alt_setpoint = alt_encoder_val;
-    aziPID.SetTunings(get_float_cfg("azi_kp"),
-                      get_float_cfg("azi_ki"),
-                      get_float_cfg("azi_kd"));
-    aziPID.SetOutputLimits(-126, 126);
-#ifdef AZI_REVERSED
-    aziPID.SetControllerDirection(QuickPID::Action::reverse);
-#endif
-    altPID.SetTunings(get_float_cfg("alt_kp"),
-                      get_float_cfg("alt_ki"),
-                      get_float_cfg("alt_kd"));
-    altPID.SetOutputLimits(-126, 126);
-    // uncomment to reverse motor direction
-#ifdef ALT_REVERSED
-    altPID.SetControllerDirection(QuickPID::Action::reverse);
-#endif
+    aziPID.set_PID_params(get_float_cfg("azi_kp"),
+                          get_float_cfg("azi_ki"),
+                          get_float_cfg("azi_kd"),
+                          -126, 126,
+                          get_float_cfg("azi_me"));
 
-    PID_timer_cfg = timerBegin(0, 40000, true);
+    altPID.set_PID_params(get_float_cfg("alt_kp"),
+                          get_float_cfg("alt_ki"),
+                          get_float_cfg("alt_kd"),
+                          -126, 126,
+                          get_float_cfg("alt_me"));
+
+    //Interrupt
+    /*PID_timer_cfg = timerBegin(0, 40000, true);
     timerAttachInterrupt(PID_timer_cfg, &PID_isr, true);
     timerAlarmWrite(PID_timer_cfg, PID_INTERRUPT_MS, true);
-    timerAlarmEnable(PID_timer_cfg);
-*/
+    timerAlarmEnable(PID_timer_cfg);*/
+
     azi_motor_standby();
     alt_motor_standby();
 }
@@ -299,6 +370,15 @@ bool cmd_pid_prm(void){
     return true;
 }
 
+bool cmd_pid_vals(void){
+    char buf[64];
+    sprintf(buf, "ALT: SPEED %f VAL %f SET %f\n", alt_motor_speed, alt_encoder_val, alt_setpoint);
+    Controller.write(buf);
+    sprintf(buf, "AZI: SPEED %f VAL %f SET %f\n", azi_motor_speed, azi_encoder_val, azi_setpoint);
+    Controller.write(buf);
+    return true;
+}
+
 bool cfg_key_exists(const char *key){
     return HGPrefs.isKey(key);
 }
@@ -426,6 +506,82 @@ bool cmd_test_motor(int8_t speed){
     return true;
 }
 
+bool cmd_alt_goto(char *buf){
+    float dest, pos;
+    char outm[256];
+    sscanf(buf, "%f", &dest);
+    pos = read_alt_encoder();
+    sprintf(outm, "GOING TO ALT %.4f\n", pos);
+    Controller.write(outm);
+    if(pos > dest){
+        for(int i=0; i<1000;i++){
+            set_alt_motor_speed(-120);
+            delay(100);
+            alt_motor_standby();
+            pos = read_alt_encoder();
+            sprintf(outm, "INTERNAL ALT %.4f\n", pos);
+            Controller.write(outm);
+            if(pos < dest) break;
+        }
+    }
+    else{
+        for(int i=0; i<1000;i++){
+            set_alt_motor_speed(120);
+            delay(100);
+            alt_motor_standby();
+            pos = read_alt_encoder();
+            sprintf(outm, "INTERNAL ALT %.4f\n", pos);
+            Controller.write(outm);
+            if(pos > dest) break;
+        }
+    }
+    return true;
+}
+
+bool cmd_alt_pid_setpoint(char *buf){
+    float dest;
+    char outm[256];
+    sscanf(buf, "%f", &dest);
+    alt_setpoint = dest;
+    sprintf(outm, "GOING TO ALT %.4f\n", dest);
+    Controller.write(outm);
+    alt_PID_enabled = true;
+
+    return true;
+}
+
+bool cmd_alt_pid_disable(void){
+    alt_PID_enabled = false;
+    alt_motor_standby();
+
+    return true;
+}
+
+bool cmd_reconfigure(void){
+    azi_encoder_zero = get_float_cfg("azie0");
+    alt_encoder_zero = get_float_cfg("alte0");
+
+    azi_encoder_val = read_azi_encoder();
+    alt_encoder_val = read_alt_encoder();
+    azi_setpoint = azi_encoder_val;
+    alt_setpoint = alt_encoder_val;
+    alt_motor_speed = 0.;
+    azi_motor_speed = 0.;
+
+    aziPID.set_PID_params(get_float_cfg("azi_kp"),
+                          get_float_cfg("azi_ki"),
+                          get_float_cfg("azi_kd"),
+                          -126, 126,
+                          get_float_cfg("azi_me"));
+
+    altPID.set_PID_params(get_float_cfg("alt_kp"),
+                          get_float_cfg("alt_ki"),
+                          get_float_cfg("alt_kd"),
+                          -126, 126,
+                          get_float_cfg("alt_me"));
+    return true;
+}
+
 bool cmd_parse(char *buf){
     char *tok, *rest;
     const char *delim = " \n\r";
@@ -513,6 +669,21 @@ bool cmd_parse(char *buf){
         Controller.write("AZI STANDBY\n");
         azi_motor_standby();
         return true;
+    }
+    else if(strcmp(tok, "alt-goto") == 0){
+        return cmd_alt_goto(rest);
+    }
+    else if(strcmp(tok, "alt-pid-setpoint") == 0){
+        return cmd_alt_pid_setpoint(rest);
+    }
+    else if(strcmp(tok, "alt-pid-disable") == 0){
+        return cmd_alt_pid_disable();
+    }
+    else if(strcmp(tok, "pid-vals") == 0){
+        return cmd_pid_vals();
+    }
+    else if(strcmp(tok, "reconfigure") == 0){
+        return cmd_pid_vals();
     }
     else{
         return cmd_err(tok);
@@ -640,10 +811,22 @@ void loop() {
         }
     }
 
-    get_time(&year, &month, &day, &hours, &minutes, &seconds);
-    get_sun_vec(get_float_cfg("lon"), get_float_cfg("lat"), year, month, day, hours, minutes, seconds, sun);
+    //get_time(&year, &month, &day, &hours, &minutes, &seconds);
+    //get_sun_vec(get_float_cfg("lon"), get_float_cfg("lat"), year, month, day, hours, minutes, seconds, sun);
+    if(alt_PID_enabled){
+        alt_encoder_val = read_alt_encoder();
+        altPID.update();
+        //Serial.printf("ALT SPEED %f %d\n", alt_motor_speed, (int8_t) alt_motor_speed);
+        set_alt_motor_speed((int8_t) alt_motor_speed);
+    }
+    if(azi_PID_enabled){
+        azi_encoder_val = read_azi_encoder();
+        aziPID.update();
+        set_azi_motor_speed((int8_t) azi_motor_speed);
+    }
+
     //serial_log();
-    //delay(1000); // Wait for 1 second
+    delay(100); // Wait for 1 second
 }
 
 void get_reflection_vec(float *in, float *mir, float *out){
@@ -716,16 +899,26 @@ void set_alt_motor_speed(int8_t speed){
     if(speed > 0){
         // Forward motion
         ledcWrite(ALT_MOTOR_PWM_CH, 0);
+#ifndef ALT_MOTOR_INVERTED
         digitalWrite(ALT_MOTOR_DIR1, LOW);
         digitalWrite(ALT_MOTOR_DIR2, HIGH);
-        ledcWrite(ALT_MOTOR_PWM_CH, abs(speed)*2);
+#else
+        digitalWrite(ALT_MOTOR_DIR1, HIGH);
+        digitalWrite(ALT_MOTOR_DIR2, LOW);
+#endif
+        ledcWrite(ALT_MOTOR_PWM_CH, speed*2);
     }
     else if(speed < 0){
         // Bakward motion
         ledcWrite(ALT_MOTOR_PWM_CH, 0);
+#ifndef ALT_MOTOR_INVERTED
         digitalWrite(ALT_MOTOR_DIR1, HIGH);
         digitalWrite(ALT_MOTOR_DIR2, LOW);
-        ledcWrite(ALT_MOTOR_PWM_CH, abs(speed)*2);
+#else
+        digitalWrite(ALT_MOTOR_DIR1, LOW);
+        digitalWrite(ALT_MOTOR_DIR2, HIGH);
+#endif
+        ledcWrite(ALT_MOTOR_PWM_CH, -speed*2);
     }
     else{
         // Blocked 
@@ -740,16 +933,27 @@ void set_azi_motor_speed(int8_t speed){
     if(speed > 0){
         // Forward motion
         ledcWrite(AZI_MOTOR_PWM_CH, 0);
+#ifndef AZI_MOTOR_INVERTED
         digitalWrite(AZI_MOTOR_DIR1, LOW);
         digitalWrite(AZI_MOTOR_DIR2, HIGH);
-        ledcWrite(AZI_MOTOR_PWM_CH, abs(speed)*2);
+#else
+        digitalWrite(AZI_MOTOR_DIR1, HIGH);
+        digitalWrite(AZI_MOTOR_DIR2, LOW);
+#endif
+
+        ledcWrite(AZI_MOTOR_PWM_CH, speed*2);
     }
     else if(speed < 0){
         // Bakward motion
         ledcWrite(AZI_MOTOR_PWM_CH, 0);
+#ifndef AZI_MOTOR_INVERTED
         digitalWrite(AZI_MOTOR_DIR1, HIGH);
         digitalWrite(AZI_MOTOR_DIR2, LOW);
-        ledcWrite(AZI_MOTOR_PWM_CH, abs(speed)*2);
+#else
+        digitalWrite(AZI_MOTOR_DIR1, LOW);
+        digitalWrite(AZI_MOTOR_DIR2, HIGH);
+#endif
+        ledcWrite(AZI_MOTOR_PWM_CH, -speed*2);
     }
     else{
         // Blocked 
@@ -777,14 +981,12 @@ void alt_motor_standby(void){
 void azi_motor_enable(void){
     azi_encoder_val = read_alt_encoder();
     azi_setpoint = azi_encoder_val;
-    aziPID.Initialize();
     azi_PID_enabled = true;
 }
 
 void alt_motor_enable(void){
     alt_encoder_val = read_alt_encoder();
     alt_setpoint = alt_encoder_val;
-    altPID.Initialize();
     alt_PID_enabled = true;
 }
 
@@ -809,6 +1011,10 @@ float get_float_default_cfg(const char *k){
         return DEFAULT_ALT_ENCODER_ZERO;
     if(strcmp(k, "azie0") == 0)
         return DEFAULT_AZI_ENCODER_ZERO;
+    if(strcmp(k, "azie_me") == 0)
+        return DEFAULT_AZI_MIN_E;
+    if(strcmp(k, "alt_me") == 0)
+        return DEFAULT_ALT_MIN_E;
     return 0.0;
 }
 
@@ -824,33 +1030,22 @@ float read_azi_encoder(void){
     // NOTE: it should be in degrees and increasing ccw
     float f_v = (float) (mv) * (ENCODER_R1 + ENCODER_R2) / ENCODER_R2 ; // Real tension value
     f_v /= 1000.0;
-    float deg = f_v * ENCODER_VOLT_TO_DEG - get_float_cfg("azie0");
+    float deg = f_v * ENCODER_VOLT_TO_DEG - azi_encoder_zero;
+    if(deg < 0) deg+=360;
     return deg; // Just to put something here
 }
 
 float read_alt_encoder(void){
-    uint32_t mv = analogReadMilliVolts(ALT_ENCODER);
+    float f_v = 0.0;
+    for(int i=0; i < ALT_ENCODER_OVERSAMPLING; i++)
+        f_v += (float) analogReadMilliVolts(ALT_ENCODER);
+    f_v /= ALT_ENCODER_OVERSAMPLING;
     // This is actual value in internal frame;
     // NOTE: it should be in degrees and increasing rotating upward
-    char buf[256];
     
-    sprintf(buf, "ADC value %d mv\n", mv);
-    Controller.write(buf);
-    float f_v = (float) (mv) * (ENCODER_R1 + ENCODER_R2) / ENCODER_R2 ; // Real tension value
+    f_v *= (ENCODER_R1 + ENCODER_R2) / ENCODER_R2 ; // Real tension value
     f_v /= 1000.0;
-    float deg = f_v * ENCODER_VOLT_TO_DEG - get_float_cfg("alte0");
+    float deg = f_v * ENCODER_VOLT_TO_DEG - alt_encoder_zero;
+    if(deg < 0) deg+=360;
     return deg; // Just to put something here
-}
-
-void IRAM_ATTR PID_isr(void){
-    if(alt_PID_enabled){
-        alt_encoder_val = read_alt_encoder();
-        altPID.Compute();
-        set_alt_motor_speed(alt_motor_speed);
-    }
-    if(azi_PID_enabled){
-        azi_encoder_val = read_azi_encoder();
-        aziPID.Compute();
-        set_alt_motor_speed(azi_motor_speed);
-    }
 }
