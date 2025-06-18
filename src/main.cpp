@@ -39,13 +39,24 @@ class ringPID{
 
         float ki, kp, kd;
         float outmax, outmin;
-        float min_error;
+        float min_error, max_error;
+        float last_error;
         uint32_t lastT;
 
     public:
         ringPID(float *In, float *Out, float *SetP){
             set_PID_vars(In, Out, SetP);
             min_error = 0.0;
+            max_error = 30.0;
+            last_error = 0.0;
+        }
+
+        float get_last_error(void){
+            return last_error;
+        }
+
+        float get_min_error(void){
+            return min_error;
         }
 
         void set_PID_params(float Kp, float Ki, float Kd, float OutMin, float OutMax, float MinErr){
@@ -73,6 +84,12 @@ class ringPID{
             if(error > 180.0){
                 error -= 360.0;
             }
+            if(error < -180.0){
+                error += 360.0;
+            }
+
+            last_error = error;
+
             if(abs(error) < min_error){
                 *output = 0.0;
                 return;
@@ -81,21 +98,26 @@ class ringPID{
             //sprintf(outm, "SETP %f - INP %f = ERR %f\n", *setpoint, *input, error);
             //Controller.write(outm);
             //Serial.print(outm);
-            sprintf(outm, "ERR %f MIN ERR %f\n", error, min_error);
+            //sprintf(outm, "ERR %f MIN ERR %f\n", error, min_error);
             //Controller.write(outm);
-            Serial.print(outm);
+            //Serial.print(outm);
             float p_comp = kp * error;
             float i_comp = 0.0;
             float d_comp = 0.0;
 
             *output = p_comp + i_comp + d_comp;
-            if(*output > outmax) *output = outmax;
-            if(*output < outmin) *output = outmin;
-
+            if(*output > 0){
+                if(*output > outmax) *output = outmax;
+                if(*output < outmin) *output = outmin;
+            }
+            else{
+                if(*output < -outmax) *output = -outmax;
+                if(*output > -outmin) *output = -outmin;
+            }
 
             //sprintf(outm, "ERROR %f P %f D %f I %f OUT %f\n", error, p_comp, d_comp, i_comp, *output);
             //Controller.write(outm);
-            Serial.print(outm);
+            //Serial.print(outm);
 
             lastT=now;
         }
@@ -106,15 +128,18 @@ float azi_setpoint, alt_setpoint,
       azi_encoder_val, alt_encoder_val,
       azi_motor_speed, alt_motor_speed,
       alt_encoder_zero, azi_encoder_zero;
+float current_lat, current_lon;
 
 ringPID aziPID(&azi_encoder_val, &azi_motor_speed, &azi_setpoint);
 ringPID altPID(&alt_encoder_val, &alt_motor_speed, &alt_setpoint);
 bool azi_PID_enabled = false, alt_PID_enabled = false;
+bool solar_control_enabled = false, manual_control_enabled = false;
 hw_timer_t *PID_timer_cfg = NULL;
 
 float sun[3];
 float mir[3];
 float ory[3];
+float ory_alt = 0.0, ory_azi = 0.0;
 
 void setup_remote_com(void){
     ComServer.begin();
@@ -177,13 +202,13 @@ void setup_motors(){
     aziPID.set_PID_params(get_float_cfg("azi_kp"),
                           get_float_cfg("azi_ki"),
                           get_float_cfg("azi_kd"),
-                          -126, 126,
+                          50, 126,
                           get_float_cfg("azi_me"));
 
     altPID.set_PID_params(get_float_cfg("alt_kp"),
                           get_float_cfg("alt_ki"),
                           get_float_cfg("alt_kd"),
-                          -126, 126,
+                          50, 126,
                           get_float_cfg("alt_me"));
 
     //Interrupt
@@ -243,6 +268,9 @@ void setup() {
     Serial.begin(9600);
 
     delay(2000);
+    // TODO, this is Berlin
+    current_lon = 13.405;// get_float_cfg("lon");
+    current_lat = 52.52; //get_float_cfg("lat");
 
     setup_pref();
     setup_wifi();
@@ -431,7 +459,7 @@ bool cmd_set_ory(char *buf){
     float alt, azi;
     sscanf(buf, "%f %f", &alt, &azi);
     geo_to_absolute(alt, azi, ory);
-    // TODO
+    
     return true;
 }
 
@@ -506,6 +534,27 @@ bool cmd_test_motor(int8_t speed){
     return true;
 }
 
+bool cmd_test_motor2(int8_t speed){
+    char buf[256];
+    
+    for(int i=0; i < 100; i++){
+        set_alt_motor_speed(120);
+        delay(100);
+        alt_motor_standby();
+        sprintf(buf, "ALT %f\n", read_alt_encoder());
+        Controller.write(buf);
+    }
+    for(int i=0; i < 100; i++){
+        set_azi_motor_speed(120);
+        delay(100);
+        azi_motor_standby();
+        sprintf(buf, "ALT %f\n", read_azi_encoder());
+        Controller.write(buf);
+    }
+
+    return true;
+}
+
 bool cmd_alt_goto(char *buf){
     float dest, pos;
     char outm[256];
@@ -545,7 +594,21 @@ bool cmd_alt_pid_setpoint(char *buf){
     alt_setpoint = dest;
     sprintf(outm, "GOING TO ALT %.4f\n", dest);
     Controller.write(outm);
+    manual_control_enabled = true;
     alt_PID_enabled = true;
+
+    return true;
+}
+
+bool cmd_azi_pid_setpoint(char *buf){
+    float dest;
+    char outm[256];
+    sscanf(buf, "%f", &dest);
+    azi_setpoint = dest;
+    sprintf(outm, "GOING TO AZI %.4f\n", dest);
+    Controller.write(outm);
+    manual_control_enabled = true;
+    azi_PID_enabled = true;
 
     return true;
 }
@@ -558,6 +621,11 @@ bool cmd_alt_pid_disable(void){
 }
 
 bool cmd_reconfigure(void){
+    manual_control_enabled = false;
+    solar_control_enabled = false;
+    alt_PID_enabled = false;
+    azi_PID_enabled = false;
+
     azi_encoder_zero = get_float_cfg("azie0");
     alt_encoder_zero = get_float_cfg("alte0");
 
@@ -579,6 +647,107 @@ bool cmd_reconfigure(void){
                           get_float_cfg("alt_kd"),
                           -126, 126,
                           get_float_cfg("alt_me"));
+
+    sun[_x_] = sun[_y_] = sun[_z_] = 0.;
+    mir[_x_] = mir[_y_] = mir[_z_] = 0.;
+    ory[_x_] = ory[_y_] = ory[_z_] = 0.;
+    
+    current_lon = get_float_cfg("lon");
+    current_lat = get_float_cfg("lat");
+
+    return true;
+}
+
+bool cmd_control_reset(void){
+    solar_control_enabled = false;
+    manual_control_enabled = false;
+    azi_PID_enabled = false;
+    alt_PID_enabled = false;
+    
+    return true;
+}
+
+bool cmd_manual_control_geo(char *buf){
+    float alt, azi;
+
+    sscanf(buf, "%f%f", &alt, &azi);
+    cmd_control_reset();
+    alt_setpoint = geo_to_internal_alt(alt, azi);
+    azi_setpoint = geo_to_internal_azi(alt, azi);
+    manual_control_enabled = true;
+    azi_PID_enabled = true;
+    alt_PID_enabled = true;
+    
+    char msg[256];
+    sprintf(msg, "Moving to GEO ALT %f AZI %f (INT ALT %f, INT AZI %f)\n", alt, azi, alt_setpoint, azi_setpoint);
+    Controller.write(msg);
+    return true;
+}
+
+bool cmd_manual_control_internal(char *buf){
+    float alt, azi;
+
+    sscanf(buf, "%f%f", &alt, &azi);
+    cmd_control_reset();
+    alt_setpoint = alt;
+    azi_setpoint = azi;
+    manual_control_enabled = true;
+    azi_PID_enabled = true;
+    alt_PID_enabled = true;
+    
+    char msg[256];
+    sprintf(msg, "Moving to INT ALT %f AZI %f (GEO ALT %f, GEO AZI %f)\n", alt, azi,
+                                                                           internal_to_geo_alt(alt, azi), 
+                                                                           internal_to_geo_azi(alt, azi));
+    Controller.write(msg);
+    return true;
+}
+
+bool cmd_solar_control(char *buf){
+    float alt, azi;
+
+    sscanf(buf, "%f%f", &alt, &azi);
+    cmd_control_reset();
+    solar_control_enabled = true;
+    ory_alt = alt;
+    ory_azi = azi;
+    azi_PID_enabled = true;
+    alt_PID_enabled = true;
+    
+    return true;
+}
+
+bool cmd_sync_move(char *buf){
+    float alt, azi;
+    char outm[256];
+    
+    float alt_error = alt - read_alt_encoder();
+    if(alt_error > 180.) 
+        alt_error -= 360;
+    else if(alt_error < -180.)
+        alt_error += 180.;
+
+    bool alt_forward = (alt_error > 0.0);
+    sprintf(outm, "ALT ERROR %.4f\n", alt_error);
+    Controller.write(outm);
+    if(alt_forward){
+        while(alt_error > 10.0){
+                sprintf(outm, "ALT ERROR %.4f\n", alt_error);
+    Controller.write(outm);
+            alt_error = alt - read_alt_encoder();
+            set_alt_motor_speed((int8_t) (5.0 * alt_error));
+            delay(10);
+        }
+    } 
+    else{
+        while(alt_error < 10.0){
+                sprintf(outm, "ALT ERROR %.4f\n", alt_error);
+    Controller.write(outm);
+            alt_error = alt - read_alt_encoder();
+            set_alt_motor_speed((int8_t) (5.0 * alt_error));
+            delay(10);
+        }
+    } 
     return true;
 }
 
@@ -591,9 +760,9 @@ bool cmd_parse(char *buf){
     if(tok == NULL){
         return true;
     }
-    else if(strcmp(tok, "set-ory") == 0){
+    /*else if(strcmp(tok, "set-ory") == 0){
         return cmd_set_ory(rest);
-    }
+    }*/
     else if(strcmp(tok, "id") == 0){
         return cmd_id();
     }
@@ -603,31 +772,31 @@ bool cmd_parse(char *buf){
     else if(strcmp(tok, "reboot") == 0){
         return cmd_reboot();
     }
-    else if(strcmp(tok, "test-rf") == 0){
+    /*else if(strcmp(tok, "test-rf") == 0){
         // TODO REMOVE
         return cmd_test_rotframe();
-    }
-    else if(strcmp(tok, "set-geo") == 0){
+    }*/
+    /*else if(strcmp(tok, "set-geo") == 0){
         return cmd_set_geo(rest);
-    }
+    }*/
     else if(strcmp(tok, "set") == 0){
         return cmd_set(rest);
     }
-    else if(strcmp(tok, "get-geo") == 0){
+    /*else if(strcmp(tok, "get-geo") == 0){
         return cmd_get_geo();
-    }
+    }*/
     else if(strcmp(tok, "get") == 0){
         return cmd_get(rest);
     }
-    else if(strcmp(tok, "pid-prm") == 0){
+    /*else if(strcmp(tok, "pid-prm") == 0){
         return cmd_pid_prm();
-    }
+    }*/
     else if(strcmp(tok, "factory-reset") == 0){
         return cmd_factory_reset();
     }
-    else if(strcmp(tok, "mirror-log") == 0){
+    /*else if(strcmp(tok, "mirror-log") == 0){
         return cmd_mirror_log();
-    }
+    }*/
     else if(strcmp(tok, "quit") == 0){
         Controller.stop();
         return true;
@@ -636,9 +805,9 @@ bool cmd_parse(char *buf){
         return cmd_current_position();
     }
     else if(strcmp(tok, "test-motors") == 0){
-        return cmd_test_motor(128);
+        return cmd_test_motor2(128);
     }
-    else if(strcmp(tok, "alt-fwd") == 0){
+    /*else if(strcmp(tok, "alt-fwd") == 0){
         Controller.write("ALT FWD\n");
         set_alt_motor_speed(120);
         sleep(2);
@@ -672,18 +841,35 @@ bool cmd_parse(char *buf){
     }
     else if(strcmp(tok, "alt-goto") == 0){
         return cmd_alt_goto(rest);
-    }
+    }*/
     else if(strcmp(tok, "alt-pid-setpoint") == 0){
         return cmd_alt_pid_setpoint(rest);
     }
-    else if(strcmp(tok, "alt-pid-disable") == 0){
-        return cmd_alt_pid_disable();
+    else if(strcmp(tok, "azi-pid-setpoint") == 0){
+        return cmd_azi_pid_setpoint(rest);
     }
     else if(strcmp(tok, "pid-vals") == 0){
         return cmd_pid_vals();
     }
     else if(strcmp(tok, "reconfigure") == 0){
         return cmd_pid_vals();
+    }
+    else if(strcmp(tok, "mcg") == 0 || strcmp(tok, "manual-control-geo") == 0){
+        return cmd_manual_control_geo(rest);
+    }
+    else if(strcmp(tok, "mci") == 0 || strcmp(tok, "manual-control-int") == 0){
+        return cmd_manual_control_internal(rest);
+    }
+    else if(strcmp(tok, "sc") == 0 || strcmp(tok, "solar-control") == 0){
+        return cmd_solar_control(rest);
+    }
+    else if(strcmp(tok, "sync-move") == 0){
+        return cmd_sync_move(rest);
+    }
+    else if(strcmp(tok, "control-reset") == 0 || strcmp(tok, "stop") == 0){
+        alt_motor_standby();
+        azi_motor_standby();
+        return cmd_control_reset();
     }
     else{
         return cmd_err(tok);
@@ -811,22 +997,60 @@ void loop() {
         }
     }
 
-    //get_time(&year, &month, &day, &hours, &minutes, &seconds);
-    //get_sun_vec(get_float_cfg("lon"), get_float_cfg("lat"), year, month, day, hours, minutes, seconds, sun);
-    if(alt_PID_enabled){
-        alt_encoder_val = read_alt_encoder();
-        altPID.update();
-        //Serial.printf("ALT SPEED %f %d\n", alt_motor_speed, (int8_t) alt_motor_speed);
-        set_alt_motor_speed((int8_t) alt_motor_speed);
-    }
-    if(azi_PID_enabled){
-        azi_encoder_val = read_azi_encoder();
-        aziPID.update();
-        set_azi_motor_speed((int8_t) azi_motor_speed);
-    }
+    delay(10);
+    char outm[256];
 
-    //serial_log();
-    delay(100); // Wait for 1 second
+    if(true){
+        if(solar_control_enabled){
+            // Compute the ory position in abs frame
+            geo_to_absolute(ory_alt, ory_azi, ory);
+            //sprintf(outm, "ORY %f %f %f\n", ory[0], ory[1], ory[2]);
+            //Controller.write(outm);
+            // Compute sun position
+            
+            get_time(&year, &month, &day, &hours, &minutes, &seconds);
+            hours = 12; minutes = 0; seconds = 0.;
+            get_sun_vec(current_lon, current_lat, year, month, day, hours, minutes, seconds, sun);
+            //sprintf(outm, "SUN %f %f %f\n", sun[0], sun[1], sun[2]);
+            //Controller.write(outm);
+            // Just for debug
+            //float sun_alt = absolute_to_geo_alt(sun),
+            //      sun_azi = absolute_to_geo_azi(sun);
+            //sprintf(outm, "SUN %f %f\n", sun_alt, sun_azi);
+            //Controller.write(outm);
+
+
+            get_normal_vec(sun, ory, mir);
+            //sprintf(outm, "MIR %f %f %f\n", mir[0], mir[1], mir[2]);
+            //Controller.write(outm);
+            alt_setpoint = absolute_to_internal_alt(mir) + 90.0;
+            azi_setpoint = absolute_to_internal_azi(mir);
+
+            if(azi_setpoint < 0) azi_setpoint += 360.0;
+            sprintf(outm, "SC INTERNAL SETP %f %f\n", azi_setpoint, alt_setpoint);
+            Controller.write(outm);
+        }
+
+        if(manual_control_enabled || solar_control_enabled){
+            if(alt_PID_enabled){
+                alt_encoder_val = read_alt_encoder();
+                altPID.update();
+                set_alt_motor_speed((int8_t) alt_motor_speed);
+            }
+            if(azi_PID_enabled){
+                azi_encoder_val = read_azi_encoder();
+                aziPID.update();
+                set_azi_motor_speed((int8_t) azi_motor_speed);
+            }
+            if(abs(aziPID.get_last_error()) < aziPID.get_min_error() && abs(altPID.get_last_error()) < altPID.get_min_error()){
+                // We have done, stop moving
+                azi_motor_standby();
+                alt_motor_standby();
+                manual_control_enabled = false;
+                solar_control_enabled = false;
+            }
+        }
+    }
 }
 
 void get_reflection_vec(float *in, float *mir, float *out){
@@ -884,15 +1108,17 @@ void get_sun_vec(float lon, float lat,
     struct STPosition pos;
     SolTrack(time, loc, &pos, useDegrees, useNorthEqualsZero, computeRefrEquatorial, computeDistance);
 
-    float alt =  pos.altitudeRefract/ R2D,
+    float alt =  pos.altitudeRefract / R2D,
           az  = pos.azimuthRefract / R2D;
+    
 
-    //Serial.printf("SUN alt %f azi %f\n", pos.altitudeRefract, pos.azimuthRefract);
-    /*sun[_x_] = cos(PI/2.0 - az) * cos(alt);
+    /*Serial.printf("SUN alt %f azi %f\n", pos.altitudeRefract, pos.azimuthRefract);
+    sun[_x_] = cos(PI/2.0 - az) * cos(alt);
     sun[_y_] = sin(PI/2.0 - az) * cos(alt);
-    sun[_z_] = sin(alt);*/
-    //Serial.printf("Sun vector %f %f %f\n", sun[_x_], sun[_y_], sun[_z_]);
+    sun[_z_] = sin(alt);
+    Serial.printf("Sun vector %f %f %f\n", sun[_x_], sun[_y_], sun[_z_]);*/
     geo_to_absolute(pos.altitudeRefract, pos.azimuthRefract, sun);
+    //Serial.printf("New vector %f %f %f\n", sun[_x_], sun[_y_], sun[_z_]);
 }
 
 void set_alt_motor_speed(int8_t speed){
@@ -925,7 +1151,6 @@ void set_alt_motor_speed(int8_t speed){
         ledcWrite(ALT_MOTOR_PWM_CH, 0);
         digitalWrite(ALT_MOTOR_DIR1, LOW);
         digitalWrite(ALT_MOTOR_DIR2, LOW);
-        ledcWrite(ALT_MOTOR_PWM, 255);
     }
 }
 
@@ -960,19 +1185,16 @@ void set_azi_motor_speed(int8_t speed){
         ledcWrite(AZI_MOTOR_PWM_CH, 0);
         digitalWrite(AZI_MOTOR_DIR1, LOW);
         digitalWrite(AZI_MOTOR_DIR2, LOW);
-        ledcWrite(AZI_MOTOR_PWM, 255);
     }
 }
 
 void azi_motor_standby(void){
-    azi_PID_enabled = false;
     ledcWrite(AZI_MOTOR_PWM_CH, 0);
     digitalWrite(AZI_MOTOR_DIR1, LOW);
     digitalWrite(AZI_MOTOR_DIR2, LOW);
 }
 
 void alt_motor_standby(void){
-    alt_PID_enabled = false;
     ledcWrite(ALT_MOTOR_PWM_CH, 0);
     digitalWrite(ALT_MOTOR_DIR1, LOW);
     digitalWrite(ALT_MOTOR_DIR2, LOW);
@@ -1011,7 +1233,7 @@ float get_float_default_cfg(const char *k){
         return DEFAULT_ALT_ENCODER_ZERO;
     if(strcmp(k, "azie0") == 0)
         return DEFAULT_AZI_ENCODER_ZERO;
-    if(strcmp(k, "azie_me") == 0)
+    if(strcmp(k, "azi_me") == 0)
         return DEFAULT_AZI_MIN_E;
     if(strcmp(k, "alt_me") == 0)
         return DEFAULT_ALT_MIN_E;
@@ -1025,10 +1247,15 @@ float get_float_cfg(const char *k){
 }
 
 float read_azi_encoder(void){
-    uint32_t mv = analogReadMilliVolts(AZI_ENCODER);
     // This is actual value in internal frame;
     // NOTE: it should be in degrees and increasing ccw
-    float f_v = (float) (mv) * (ENCODER_R1 + ENCODER_R2) / ENCODER_R2 ; // Real tension value
+    float f_v = 0.0;
+    for(int i=0; i < AZI_ENCODER_OVERSAMPLING; i++){
+        f_v += (float) analogReadMilliVolts(AZI_ENCODER);
+        delay(1);
+    }
+    f_v /= AZI_ENCODER_OVERSAMPLING;
+    f_v *= (ENCODER_R1 + ENCODER_R2) / ENCODER_R2 ; // Real tension value
     f_v /= 1000.0;
     float deg = f_v * ENCODER_VOLT_TO_DEG - azi_encoder_zero;
     if(deg < 0) deg+=360;
@@ -1037,8 +1264,10 @@ float read_azi_encoder(void){
 
 float read_alt_encoder(void){
     float f_v = 0.0;
-    for(int i=0; i < ALT_ENCODER_OVERSAMPLING; i++)
+    for(int i=0; i < ALT_ENCODER_OVERSAMPLING; i++){
         f_v += (float) analogReadMilliVolts(ALT_ENCODER);
+        delay(1);
+    }
     f_v /= ALT_ENCODER_OVERSAMPLING;
     // This is actual value in internal frame;
     // NOTE: it should be in degrees and increasing rotating upward
