@@ -30,7 +30,7 @@
 #include <Wire.h>
 
 // PID motor control
-#include <QuickPID.h>
+#include "ring_pid.h"
 
 // PWM definitions
 #define MOTOR_PWM_RES 8
