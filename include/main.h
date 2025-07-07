@@ -4,9 +4,11 @@
 #include <Arduino.h>
 // WiFi connection
 #include <WiFi.h>
+// ESP Telnet
+//#include <WiFiUdp.h>
+#include "ESPTelnet.h"
 // NTP
 #include <NTPClient.h>
-#include <WiFiUdp.h>
 // Real Time Clock
 #include <ESP32Time.h>
 // SolTrack

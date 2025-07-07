@@ -6,8 +6,9 @@ const char* ssid = WIFI_SSID;
 const char* password = WIFI_PASSWORD;
 bool WiFi_ok = false;
 
-WiFiServer ComServer(23);
-WiFiClient Controller;
+//WiFiServer ComServer(23);
+//WiFiClient Controller;
+ESPTelnet telnet;
 
 uint32_t chip_id;
 
@@ -96,10 +97,10 @@ class ringPID{
             }
 
             //sprintf(outm, "SETP %f - INP %f = ERR %f\n", *setpoint, *input, error);
-            //Controller.write(outm);
+            //telnet.print(outm);
             //Serial.print(outm);
             //sprintf(outm, "ERR %f MIN ERR %f\n", error, min_error);
-            //Controller.write(outm);
+            //telnet.print(outm);
             //Serial.print(outm);
             float p_comp = kp * error;
             float i_comp = 0.0;
@@ -116,7 +117,7 @@ class ringPID{
             }
 
             //sprintf(outm, "ERROR %f P %f D %f I %f OUT %f\n", error, p_comp, d_comp, i_comp, *output);
-            //Controller.write(outm);
+            //telnet.print(outm);
             //Serial.print(outm);
 
             lastT=now;
@@ -141,9 +142,71 @@ float mir[3];
 float ory[3];
 float ory_alt = 0.0, ory_azi = 0.0;
 
-void setup_remote_com(void){
-    ComServer.begin();
+void onTelnetConnect(String ip) {
+    Serial.print("- Telnet: ");
+    Serial.print(ip);
+    Serial.println(" connected");
+
+    char buf[16];
+    sprintf(buf, "%012x\n", chip_id);
+  
+    telnet.println("\nWelcome to Heliograph\nIP: " + telnet.getIP() + "\nID: " + buf);
+    telnet.println("Use quit to disconnect");
+    telnet.print("[  ] > ");
 }
+
+void onTelnetDisconnect(String ip) {
+    Serial.print("- Telnet: ");
+    Serial.print(ip);
+    Serial.println(" disconnected");
+}
+
+void onTelnetReconnect(String ip) {
+    Serial.print("- Telnet: ");
+    Serial.print(ip);
+    Serial.println(" reconnected");
+}
+
+void onTelnetConnectionAttempt(String ip) {
+    Serial.print("- Telnet: ");
+    Serial.print(ip);
+    Serial.println(" tried to connected");
+}
+
+bool cmd_parse(char *);
+
+void onTelnetInput(String str) {
+    char *a;
+    a = new char[str.length() + 1];
+    strncpy(a, str.c_str(), str.length());
+    a[str.length()] = '\0';
+    if( cmd_parse(a) ){
+        telnet.print("[OK] ");
+    }
+    else{
+        telnet.print("[!!] ");
+    }
+    telnet.print("> ");
+}
+
+void setupTelnet() {  
+  // passing on functions for various telnet events
+  telnet.onConnect(onTelnetConnect);
+  telnet.onConnectionAttempt(onTelnetConnectionAttempt);
+  telnet.onReconnect(onTelnetReconnect);
+  telnet.onDisconnect(onTelnetDisconnect);
+  telnet.onInputReceived(onTelnetInput);
+
+  Serial.print("- Telnet: ");
+  if (telnet.begin(TELNET_PORT)) {
+    Serial.println("running");
+  } 
+  else {
+    Serial.println("error.");
+  }
+}
+
+
 
 void setup_pref(void){
     HGPrefs.begin("hg", PREF_RW_MODE);
@@ -176,6 +239,10 @@ void setup_accell_compass_MPU9250(void){
     // Check examples from https://github.com/jfredine/Adafruit_MPU9250/
 }
 #endif
+
+bool cfg_key_exists(const char *key){
+    return HGPrefs.isKey(key);
+}
 
 void setup_motors(){
     pinMode(ALT_MOTOR_DIR1, OUTPUT);
@@ -282,33 +349,22 @@ void setup() {
 #ifdef USE_MPU9250
     setup_accell_compass_MPU9250();
 #endif
-    setup_remote_com();
+    setupTelnet();
     setup_motors();
 }
 
-uint16_t com_get_next_cmd(char *buf, uint16_t minbuf, uint16_t maxbuf){
-    uint16_t i;
-    for(i = minbuf; i < maxbuf && (buf[i] = Controller.read()) != '\n' && buf[i] != -1; i++)
-        ;//Serial.printf("%d %d %d\n", i, minbuf, maxbuf);
-    if(buf[i] == '\n' || i == maxbuf){
-        buf[i] = '\0';
-        return maxbuf;
-    }
-    else
-        return i;
-}
 
 bool cmd_id(void){
     char buf[16];
     sprintf(buf, "%012x\n", chip_id);
-    Controller.write(buf);
+    telnet.print(buf);
     return true;
 }
 
 bool cmd_err(char *cmd){
     char buf[128];
     sprintf(buf, "command unknown %s\n", cmd);
-    Controller.write(buf);
+    telnet.print(buf);
     return false;
 }
 
@@ -319,7 +375,7 @@ bool cmd_time(void){
     float s;
     get_time(&y, &m, &d, &h, &mi, &s);
     sprintf(buf, "%04d-%02d-%02dT%02d:%02d:%06.4fZ\n", y, m, d, h, mi, s);
-    Controller.write(buf);
+    telnet.print(buf);
     return true;
 }
 
@@ -340,31 +396,31 @@ bool cmd_test_rotframe(void){
     initialize_rotation_frame(g, m);
     geo_to_absolute(10.0, 90.0, ray);
     sprintf(buf, "\nABSOLU. VEC: %+6.4f %+6.4f %+6.4f\n", ray[0], ray[1], ray[2]);
-    Controller.write(buf);
+    telnet.print(buf);
     internal_frame_get_rotation_matrix(r);
     Serial.printf("Done");
     sprintf(buf, "%+6.4f %+6.4f %+6.4f\n%+6.4f %+6.4f %+6.4f\n%+6.4f %+6.4f %+6.4f\n", r[0][0], r[0][1], r[0][2],
                                                                                        r[1][0], r[1][1], r[1][2], 
                                                                                        r[2][0], r[2][1], r[2][2]);
-    Controller.write(buf);
+    telnet.print(buf);
     absolute_to_internal_v(ray, outray);
     sprintf(buf, "\nINTERNAL VEC: %+6.4f %+6.4f %+6.4f\n", outray[0], outray[1], outray[2]);
-    Controller.write(buf);
+    telnet.print(buf);
 
     float alt = absolute_to_internal_alt(ray),
           azi = absolute_to_internal_azi(ray);
     sprintf(buf, "INTERNAL AZI: %05.1f\nINTERNAL ALT: %05.1f\n", azi, alt);
-    Controller.write(buf);
+    telnet.print(buf);
 
     float test_abs[3];
     internal_to_absolute(alt, azi, test_abs);
     sprintf(buf, "\nRECOMP. ABS. VEC: %+6.4f %+6.4f %+6.4f\n", test_abs[0], test_abs[1], test_abs[2]);
-    Controller.write(buf);
+    telnet.print(buf);
 
     sprintf(buf, "\nRECOMP. GEO ALT: %+6.4f\n", internal_to_geo_alt(alt, azi));
-    Controller.write(buf);
+    telnet.print(buf);
     sprintf(buf, "\nRECOMP. GEO AZI: %+6.4f\n", internal_to_geo_azi(alt, azi));
-    Controller.write(buf);
+    telnet.print(buf);
     
     return true;
 }
@@ -385,30 +441,26 @@ bool cmd_get_geo(void){
 
     char buf[32];
     sprintf(buf, "LAT: %08.4f LON: %08.4f\n", lat, lon);
-    Controller.write(buf);
+    telnet.print(buf);
     return true;
 }
 
 bool cmd_pid_prm(void){
     char buf[64];
     sprintf(buf, "ALT: P %8.1f I %8.1f D %8.1f\n", get_float_cfg("alt_kp"), get_float_cfg("alt_ki"), get_float_cfg("alt_kd"));
-    Controller.write(buf);
+    telnet.print(buf);
     sprintf(buf, "AZI: P %8.1f I %8.1f D %8.1f\n", get_float_cfg("azi_kp"), get_float_cfg("azi_ki"), get_float_cfg("azi_kd"));
-    Controller.write(buf);
+    telnet.print(buf);
     return true;
 }
 
 bool cmd_pid_vals(void){
     char buf[64];
     sprintf(buf, "ALT: SPEED %f VAL %f SET %f\n", alt_motor_speed, alt_encoder_val, alt_setpoint);
-    Controller.write(buf);
+    telnet.print(buf);
     sprintf(buf, "AZI: SPEED %f VAL %f SET %f\n", azi_motor_speed, azi_encoder_val, azi_setpoint);
-    Controller.write(buf);
+    telnet.print(buf);
     return true;
-}
-
-bool cfg_key_exists(const char *key){
-    return HGPrefs.isKey(key);
 }
 
 bool cmd_set(char *buf){
@@ -425,7 +477,7 @@ bool cmd_set(char *buf){
     else{
         char obuf[32];
         sprintf(obuf, "Key %s not found.\n", key);
-        Controller.write(obuf);
+        telnet.print(obuf);
         return false;
     }
 }
@@ -439,12 +491,12 @@ bool cmd_get(char *buf){
     if(cfg_key_exists(key)){
         val = get_float_cfg(key);
         sprintf(obuf, "%15s = %10g\n", key, val);
-        Controller.write(obuf);
+        telnet.print(obuf);
         return true;
     }
     else{
         sprintf(obuf, "Key %s not found.\n", key);
-        Controller.write(obuf);
+        telnet.print(obuf);
         return false;
     }
 }
@@ -467,24 +519,24 @@ bool cmd_mirror_log(void){
     char buf[256];
     
     sprintf(buf, "SUN      : %.4f %.4f %.4f\n", sun[_x_], sun[_y_], sun[_z_]);
-    Controller.write(buf);
+    telnet.print(buf);
     sprintf(buf, "           ALT: %.4f AZI: %.4f\n", absolute_to_geo_alt(sun), absolute_to_geo_azi(sun));
-    Controller.write(buf);
+    telnet.print(buf);
 
     sprintf(buf, "OUT-RAY  : %.4f %.4f %.4f\n", ory[_x_], ory[_y_], ory[_z_]);
-    Controller.write(buf);
+    telnet.print(buf);
     sprintf(buf, "           ALT: %.4f AZI: %.4f\n", absolute_to_geo_alt(ory), absolute_to_geo_azi(ory));
-    Controller.write(buf);
+    telnet.print(buf);
 
     sprintf(buf, "MIRROR   : %.4f %.4f %.4f\n", mir[_x_], mir[_y_], mir[_z_]);
-    Controller.write(buf);
+    telnet.print(buf);
     sprintf(buf, "           ALT: %.4f AZI: %.4f\n", absolute_to_geo_alt(mir), absolute_to_geo_azi(mir));
-    Controller.write(buf);
+    telnet.print(buf);
 
 
     String outs = timeClient.getFormattedDate();
     sprintf(buf, "TIME     : %s\n", outs.c_str());
-    Controller.write(buf);
+    telnet.print(buf);
     return true;
 }
 
@@ -495,39 +547,39 @@ bool cmd_current_position(void){
     char buf[256];
     
     sprintf(buf, "INTERNAL ALT %.4f AZI %.4f\n", internal_alt, internal_azi);
-    Controller.write(buf);
+    telnet.print(buf);
     sprintf(buf, "ABSOLUTE ALT %.4f AZI %.4f\n", internal_to_geo_alt(internal_alt, internal_azi), 
                                                  internal_to_geo_azi(internal_alt, internal_azi));
-    Controller.write(buf);
+    telnet.print(buf);
     return true;
 }
 
 bool cmd_test_motor(int8_t speed){
     char buf[256];
     
-    Controller.write("ALT ENABLE\n");
+    telnet.print("ALT ENABLE\n");
     alt_motor_enable();
     sleep(1);
-    Controller.write("ALT FWD\n");
+    telnet.print("ALT FWD\n");
     set_alt_motor_speed(120);
     sleep(2);
-    Controller.write("ALT REV\n");
+    telnet.print("ALT REV\n");
     set_alt_motor_speed(-120);
     sleep(2);
-    Controller.write("ALT STANDBY\n");
+    telnet.print("ALT STANDBY\n");
     alt_motor_standby();
     sleep(2);
 
-    Controller.write("AZI ENABLE\n");
+    telnet.print("AZI ENABLE\n");
     azi_motor_enable();
     sleep(1);
-    Controller.write("AZI FWD\n");
+    telnet.print("AZI FWD\n");
     set_azi_motor_speed(120);
     sleep(2);
-    Controller.write("AZI REV\n");
+    telnet.print("AZI REV\n");
     set_azi_motor_speed(-120);
     sleep(2);
-    Controller.write("AZI STANDBY\n");
+    telnet.print("AZI STANDBY\n");
     azi_motor_standby();
     sleep(2);
 
@@ -542,14 +594,14 @@ bool cmd_test_motor2(int8_t speed){
         delay(100);
         alt_motor_standby();
         sprintf(buf, "ALT %f\n", read_alt_encoder());
-        Controller.write(buf);
+        telnet.print(buf);
     }
     for(int i=0; i < 100; i++){
         set_azi_motor_speed(120);
         delay(100);
         azi_motor_standby();
         sprintf(buf, "ALT %f\n", read_azi_encoder());
-        Controller.write(buf);
+        telnet.print(buf);
     }
 
     return true;
@@ -561,7 +613,7 @@ bool cmd_alt_goto(char *buf){
     sscanf(buf, "%f", &dest);
     pos = read_alt_encoder();
     sprintf(outm, "GOING TO ALT %.4f\n", pos);
-    Controller.write(outm);
+    telnet.print(outm);
     if(pos > dest){
         for(int i=0; i<1000;i++){
             set_alt_motor_speed(-120);
@@ -569,7 +621,7 @@ bool cmd_alt_goto(char *buf){
             alt_motor_standby();
             pos = read_alt_encoder();
             sprintf(outm, "INTERNAL ALT %.4f\n", pos);
-            Controller.write(outm);
+            telnet.print(outm);
             if(pos < dest) break;
         }
     }
@@ -580,7 +632,7 @@ bool cmd_alt_goto(char *buf){
             alt_motor_standby();
             pos = read_alt_encoder();
             sprintf(outm, "INTERNAL ALT %.4f\n", pos);
-            Controller.write(outm);
+            telnet.print(outm);
             if(pos > dest) break;
         }
     }
@@ -593,7 +645,7 @@ bool cmd_alt_pid_setpoint(char *buf){
     sscanf(buf, "%f", &dest);
     alt_setpoint = dest;
     sprintf(outm, "GOING TO ALT %.4f\n", dest);
-    Controller.write(outm);
+    telnet.print(outm);
     manual_control_enabled = true;
     alt_PID_enabled = true;
 
@@ -606,7 +658,7 @@ bool cmd_azi_pid_setpoint(char *buf){
     sscanf(buf, "%f", &dest);
     azi_setpoint = dest;
     sprintf(outm, "GOING TO AZI %.4f\n", dest);
-    Controller.write(outm);
+    telnet.print(outm);
     manual_control_enabled = true;
     azi_PID_enabled = true;
 
@@ -680,7 +732,7 @@ bool cmd_manual_control_geo(char *buf){
     
     char msg[256];
     sprintf(msg, "Moving to GEO ALT %f AZI %f (INT ALT %f, INT AZI %f)\n", alt, azi, alt_setpoint, azi_setpoint);
-    Controller.write(msg);
+    telnet.print(msg);
     return true;
 }
 
@@ -699,7 +751,7 @@ bool cmd_manual_control_internal(char *buf){
     sprintf(msg, "Moving to INT ALT %f AZI %f (GEO ALT %f, GEO AZI %f)\n", alt, azi,
                                                                            internal_to_geo_alt(alt, azi), 
                                                                            internal_to_geo_azi(alt, azi));
-    Controller.write(msg);
+    telnet.print(msg);
     return true;
 }
 
@@ -729,11 +781,11 @@ bool cmd_sync_move(char *buf){
 
     bool alt_forward = (alt_error > 0.0);
     sprintf(outm, "ALT ERROR %.4f\n", alt_error);
-    Controller.write(outm);
+    telnet.print(outm);
     if(alt_forward){
         while(alt_error > 10.0){
                 sprintf(outm, "ALT ERROR %.4f\n", alt_error);
-    Controller.write(outm);
+    telnet.print(outm);
             alt_error = alt - read_alt_encoder();
             set_alt_motor_speed((int8_t) (5.0 * alt_error));
             delay(10);
@@ -742,7 +794,7 @@ bool cmd_sync_move(char *buf){
     else{
         while(alt_error < 10.0){
                 sprintf(outm, "ALT ERROR %.4f\n", alt_error);
-    Controller.write(outm);
+    telnet.print(outm);
             alt_error = alt - read_alt_encoder();
             set_alt_motor_speed((int8_t) (5.0 * alt_error));
             delay(10);
@@ -760,9 +812,9 @@ bool cmd_parse(char *buf){
     if(tok == NULL){
         return true;
     }
-    /*else if(strcmp(tok, "set-ory") == 0){
+    else if(strcmp(tok, "set-ory") == 0){
         return cmd_set_ory(rest);
-    }*/
+    }
     else if(strcmp(tok, "id") == 0){
         return cmd_id();
     }
@@ -772,33 +824,33 @@ bool cmd_parse(char *buf){
     else if(strcmp(tok, "reboot") == 0){
         return cmd_reboot();
     }
-    /*else if(strcmp(tok, "test-rf") == 0){
+    else if(strcmp(tok, "test-rf") == 0){
         // TODO REMOVE
         return cmd_test_rotframe();
-    }*/
-    /*else if(strcmp(tok, "set-geo") == 0){
+    }
+    else if(strcmp(tok, "set-geo") == 0){
         return cmd_set_geo(rest);
-    }*/
+    }
     else if(strcmp(tok, "set") == 0){
         return cmd_set(rest);
     }
-    /*else if(strcmp(tok, "get-geo") == 0){
+    else if(strcmp(tok, "get-geo") == 0){
         return cmd_get_geo();
-    }*/
+    }
     else if(strcmp(tok, "get") == 0){
         return cmd_get(rest);
     }
-    /*else if(strcmp(tok, "pid-prm") == 0){
+    else if(strcmp(tok, "pid-prm") == 0){
         return cmd_pid_prm();
-    }*/
+    }
     else if(strcmp(tok, "factory-reset") == 0){
         return cmd_factory_reset();
     }
-    /*else if(strcmp(tok, "mirror-log") == 0){
+    else if(strcmp(tok, "mirror-log") == 0){
         return cmd_mirror_log();
-    }*/
+    }
     else if(strcmp(tok, "quit") == 0){
-        Controller.stop();
+        telnet.println("Use quit to disconnect");
         return true;
     }
     else if(strcmp(tok, "current-position") == 0){
@@ -807,41 +859,41 @@ bool cmd_parse(char *buf){
     else if(strcmp(tok, "test-motors") == 0){
         return cmd_test_motor2(128);
     }
-    /*else if(strcmp(tok, "alt-fwd") == 0){
-        Controller.write("ALT FWD\n");
+    else if(strcmp(tok, "alt-fwd") == 0){
+        telnet.print("ALT FWD\n");
         set_alt_motor_speed(120);
         sleep(2);
-        Controller.write("ALT STANDBY\n");
+        telnet.print("ALT STANDBY\n");
         alt_motor_standby();
         return true;
     }
     else if(strcmp(tok, "alt-bck") == 0){
-        Controller.write("ALT REV\n");
+        telnet.print("ALT REV\n");
         set_alt_motor_speed(-120);
         sleep(2);
-        Controller.write("ALT STANDBY\n");
+        telnet.print("ALT STANDBY\n");
         alt_motor_standby();
         return true;
     }
     else if(strcmp(tok, "azi-fwd") == 0){
-        Controller.write("AZI FWD\n");
+        telnet.print("AZI FWD\n");
         set_azi_motor_speed(120);
         sleep(2);
-        Controller.write("AZI STANDBY\n");
+        telnet.print("AZI STANDBY\n");
         azi_motor_standby();
         return true;
     }
     else if(strcmp(tok, "azi-bck") == 0){
-        Controller.write("AZI REV\n");
+        telnet.print("AZI REV\n");
         set_azi_motor_speed(-120);
         sleep(2);
-        Controller.write("AZI STANDBY\n");
+        telnet.print("AZI STANDBY\n");
         azi_motor_standby();
         return true;
     }
     else if(strcmp(tok, "alt-goto") == 0){
         return cmd_alt_goto(rest);
-    }*/
+    }
     else if(strcmp(tok, "alt-pid-setpoint") == 0){
         return cmd_alt_pid_setpoint(rest);
     }
@@ -874,26 +926,6 @@ bool cmd_parse(char *buf){
     else{
         return cmd_err(tok);
     }
-}
-
-void check_com_connections(void){
-  if (ComServer.hasClient())
-  {
-    // If we are already connected to another computer, 
-    // then reject the new connection. Otherwise accept
-    // the connection. 
-    if (Controller.connected())
-    {
-      Serial.println("Connection rejected");
-      ComServer.available().stop();
-    }
-    else
-    {
-      Serial.println("Connection accepted");
-      Controller = ComServer.available();
-      Controller.write("[  ] > ");
-    }
-  }
 }
 
 void update_time_from_NTP(void){
@@ -975,28 +1007,8 @@ void loop() {
     uint16_t buf_last = 0;
     char cmd_buf[CMD_BUF_LEN];
 
-    if(Controller.available()){
-        buf_last = com_get_next_cmd(cmd_buf, buf_last, CMD_BUF_LEN-1);
-        if(buf_last == CMD_BUF_LEN-1){
-            if( cmd_parse(cmd_buf) ){
-                Controller.write("[OK] ");
-            }
-            else{
-                Controller.write("[!!] ");
-            }
-            Controller.write("> ");
-            buf_last = 0;
-        }
-    }
-    else{
-        check_com_connections();
-        if(Controller.available()){
-            Controller.flush();
-            // Don't know why the one above does not work...
-            com_get_next_cmd(cmd_buf, (uint16_t) 0, CMD_BUF_LEN-1);
-        }
-    }
-
+    telnet.loop();
+    
     delay(10);
     char outm[256];
 
@@ -1005,30 +1017,30 @@ void loop() {
             // Compute the ory position in abs frame
             geo_to_absolute(ory_alt, ory_azi, ory);
             //sprintf(outm, "ORY %f %f %f\n", ory[0], ory[1], ory[2]);
-            //Controller.write(outm);
+            //telnet.print(outm);
             // Compute sun position
             
             get_time(&year, &month, &day, &hours, &minutes, &seconds);
             hours = 12; minutes = 0; seconds = 0.;
             get_sun_vec(current_lon, current_lat, year, month, day, hours, minutes, seconds, sun);
             //sprintf(outm, "SUN %f %f %f\n", sun[0], sun[1], sun[2]);
-            //Controller.write(outm);
+            //telnet.print(outm);
             // Just for debug
             //float sun_alt = absolute_to_geo_alt(sun),
             //      sun_azi = absolute_to_geo_azi(sun);
             //sprintf(outm, "SUN %f %f\n", sun_alt, sun_azi);
-            //Controller.write(outm);
+            //telnet.print(outm);
 
 
             get_normal_vec(sun, ory, mir);
             //sprintf(outm, "MIR %f %f %f\n", mir[0], mir[1], mir[2]);
-            //Controller.write(outm);
+            //telnet.print(outm);
             alt_setpoint = absolute_to_internal_alt(mir) + 90.0;
             azi_setpoint = absolute_to_internal_azi(mir);
 
             if(azi_setpoint < 0) azi_setpoint += 360.0;
             sprintf(outm, "SC INTERNAL SETP %f %f\n", azi_setpoint, alt_setpoint);
-            Controller.write(outm);
+            //telnet.print(outm);
         }
 
         if(manual_control_enabled || solar_control_enabled){

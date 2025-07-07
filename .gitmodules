@@ -22,3 +22,9 @@
 [submodule "lib/QuickPID"]
 	path = lib/QuickPID
 	url = https://github.com/Dlloydev/QuickPID
+[submodule "lib/Adafruit_HMC5883_Unified"]
+	path = lib/Adafruit_HMC5883_Unified
+	url = https://github.com/adafruit/Adafruit_HMC5883_Unified
+[submodule "lib/ESPTelnet"]
+	path = lib/ESPTelnet
+	url = https://github.com/LennartHennigs/ESPTelnet
