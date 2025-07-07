@@ -173,13 +173,13 @@ void get_reflection_vec(float *in, float *mir, float *out){
 }
 
 void get_normal_vec(float *in, float *out, float *mir){
-    float norm = - in[_x_] * out[_x_] + \
-                 - in[_y_] * out[_y_] + \
-                 - in[_z_] * out[_z_];
+    float norm = in[_x_] * out[_x_] + \
+                 in[_y_] * out[_y_] + \
+                 in[_z_] * out[_z_];
 
     norm = - 2.0 * sqrt((1+norm)/2.0);
     for(int i=0; i < 3; i++)
-        mir[i] = (in[i] - out[i])/norm; 
+        mir[i] = (-in[i] - out[i])/norm; 
 }
 
 void get_sun_vec(float lon, float lat, 
@@ -220,6 +220,15 @@ void get_sun_vec(float lon, float lat,
     Serial.printf("Sun vector %f %f %f\n", sun[_x_], sun[_y_], sun[_z_]);*/
     geo_to_absolute(pos.altitudeRefract, pos.azimuthRefract, sun);
     //Serial.printf("New vector %f %f %f\n", sun[_x_], sun[_y_], sun[_z_]);
+}
+
+void update_sun_vec(void){
+    uint16_t year;
+    uint8_t month, day, hours, minutes;
+    float seconds; 
+            
+    get_time(&year, &month, &day, &hours, &minutes, &seconds);
+    get_sun_vec(current_lon, current_lat, year, month, day, hours, minutes, seconds, sun);
 }
 
 // Motors and Encoders Routine
@@ -474,6 +483,8 @@ bool cmd_set_ory(char *buf){
 bool cmd_mirror_log(void){
     char buf[256];
     
+    update_sun_vec();
+
     sprintf(buf, "SUN      : %.4f %.4f %.4f\n", sun[_x_], sun[_y_], sun[_z_]);
     telnet.print(buf);
     sprintf(buf, "           ALT: %.4f AZI: %.4f\n", absolute_to_geo_alt(sun), absolute_to_geo_azi(sun));
@@ -483,6 +494,8 @@ bool cmd_mirror_log(void){
     telnet.print(buf);
     sprintf(buf, "           ALT: %.4f AZI: %.4f\n", absolute_to_geo_alt(ory), absolute_to_geo_azi(ory));
     telnet.print(buf);
+
+    get_normal_vec(sun, ory, mir);
 
     sprintf(buf, "MIRROR   : %.4f %.4f %.4f\n", mir[_x_], mir[_y_], mir[_z_]);
     telnet.print(buf);
@@ -497,15 +510,12 @@ bool cmd_mirror_log(void){
 }
 
 bool cmd_current_position(void){
-    float internal_alt = read_alt_encoder(),
-          internal_azi = read_azi_encoder();
+    float alt = read_alt_encoder(),
+          azi = read_azi_encoder();
 
     char buf[256];
     
-    sprintf(buf, "INTERNAL ALT %.4f AZI %.4f\n", internal_alt, internal_azi);
-    telnet.print(buf);
-    sprintf(buf, "ABSOLUTE ALT %.4f AZI %.4f\n", internal_to_geo_alt(internal_alt, internal_azi), 
-                                                 internal_to_geo_azi(internal_alt, internal_azi));
+    sprintf(buf, "ABSOLUTE ALT %.4f AZI %.4f\n", alt, azi);
     telnet.print(buf);
     return true;
 }
@@ -650,8 +660,8 @@ bool cmd_manual_control_geo(char *buf){
 
     sscanf(buf, "%f%f", &alt, &azi);
     cmd_control_reset();
-    alt_setpoint = geo_to_internal_alt(alt, azi);
-    azi_setpoint = geo_to_internal_azi(alt, azi);
+    alt_setpoint = alt;
+    azi_setpoint = azi;
     manual_control_enabled = true;
     azi_PID_enabled = true;
     alt_PID_enabled = true;
@@ -674,9 +684,7 @@ bool cmd_manual_control_internal(char *buf){
     alt_PID_enabled = true;
     
     char msg[256];
-    sprintf(msg, "Moving to INT ALT %f AZI %f (GEO ALT %f, GEO AZI %f)\n", alt, azi,
-                                                                           internal_to_geo_alt(alt, azi), 
-                                                                           internal_to_geo_azi(alt, azi));
+    sprintf(msg, "Moving to GEO ALT %f, GEO AZI %f\n", alt, azi);
     telnet.print(msg);
     return true;
 }
@@ -972,34 +980,25 @@ void setup() {
     // Serial communication
     Serial.begin(9600);
 
-    delay(2000);
-    // TODO, this is Berlin
-    current_lon = 13.405;// get_float_cfg("lon");
-    current_lat = 52.52; //get_float_cfg("lat");
+    Serial.printf("HelioGraph %012x", chip_id);
+
+    // TODO, this is Pisa
+    current_lon = 10.40;// get_float_cfg("lon");
+    current_lat = 43.72; //get_float_cfg("lat");
 
     setup_pref();
     setup_wifi();
-    setup_ntp();
+    if(WiFi_ok) setup_ntp();
     setup_rtc();
 
-    setupTelnet();
+    if(WiFi_ok) setupTelnet();
     setup_motors();
 }
 
 void loop() {
-    uint16_t year;
-    uint8_t month, day, hours, minutes;
-    float seconds; 
-    char buf[256];
-
-    uint16_t buf_last = 0;
-    char cmd_buf[CMD_BUF_LEN];
-
     telnet.loop();
-    
-    delay(10);
-    char outm[256];
 
+    char outm[256];
     if(true){
         if(solar_control_enabled){
             // Compute the ory position in abs frame
@@ -1008,9 +1007,7 @@ void loop() {
             //telnet.print(outm);
             // Compute sun position
             
-            get_time(&year, &month, &day, &hours, &minutes, &seconds);
-            hours = 12; minutes = 0; seconds = 0.;
-            get_sun_vec(current_lon, current_lat, year, month, day, hours, minutes, seconds, sun);
+            update_sun_vec();
             //sprintf(outm, "SUN %f %f %f\n", sun[0], sun[1], sun[2]);
             //telnet.print(outm);
             // Just for debug
@@ -1023,8 +1020,8 @@ void loop() {
             get_normal_vec(sun, ory, mir);
             //sprintf(outm, "MIR %f %f %f\n", mir[0], mir[1], mir[2]);
             //telnet.print(outm);
-            alt_setpoint = absolute_to_internal_alt(mir) + 90.0;
-            azi_setpoint = absolute_to_internal_azi(mir);
+            alt_setpoint = absolute_to_geo_alt(mir);
+            azi_setpoint = absolute_to_geo_azi(mir);
 
             if(azi_setpoint < 0) azi_setpoint += 360.0;
             sprintf(outm, "SC INTERNAL SETP %f %f\n", azi_setpoint, alt_setpoint);

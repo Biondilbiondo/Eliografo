@@ -4,16 +4,13 @@
 There are different frames for different pourposes:
     - geo_frame, is an absolute frame used for input/output, here coordinates are 
       always given as a alt/azi pair in degrees. Alt is from horizon up, Azi is from 
-      north clockwise.
+      north clockwise. Limits for Alt is [-90; 90] for Azi [0; 360]
     - absolute_frame, is the frame used for internal calculations, is a cartesian frame
       so as far as possible every point is represented with coordinates and every direction
-      with unit vectors. 
-      If needed Alt/Azi are given as follow: 
-        Azi from X axis counterclockwise
-        Alt from XY plane through Z axis
+      with unit vectors.
       Axis are binded to absolute geographic direction. 
       X axis is East, Y axis is North, Z axis is Up. This is a right-handed system
-    - internal_frame, this is a frame internal to the structure, so that motors directly
+    - internal_frame [NOT USED], this is a frame internal to the structure, so that motors directly
       correspond to Alt or Azi angles. It is in practice a rotated absolute_frame. It is also a 
       righte endend frame; Coordinates are generaly exposed as Alt/Azi angles in degrees. 
 */
@@ -102,11 +99,13 @@ float absolute_to_geo_azi(float *v){
     absolute_azi_sine = v[_y_] / norm;
     absolute_azi_cosine = v[_x_] / norm;
     absolute_azi = sc2a(absolute_azi_sine, absolute_azi_cosine);
-    return 90.0 - absolute_azi * RAD2DEG;
+    absolute_azi = 90.0 - absolute_azi * RAD2DEG;
+    if(absolute_azi < 0) absolute_azi += 360.;
+    return absolute_azi;
 }
 
-void frame_transform(float *i, float r[3][3], float *o){
-    /*Given a vector apply the transformation r to it, used to ratate internal frame to absolute and vice-versa*/
+/*void frame_transform(float *i, float r[3][3], float *o){
+    //Given a vector apply the transformation r to it, used to ratate internal frame to absolute and vice-versa
     o[_x_] = i[_x_] * r[_x_][_x_] + i[_y_] * r[_x_][_y_] + i[_z_] * r[_x_][_z_];
     o[_y_] = i[_x_] * r[_y_][_x_] + i[_y_] * r[_y_][_y_] + i[_z_] * r[_y_][_z_];
     o[_z_] = i[_x_] * r[_z_][_x_] + i[_y_] * r[_z_][_y_] + i[_z_] * r[_z_][_z_];
@@ -148,9 +147,8 @@ void internal_to_absolute(float alt, float azi, float *a){
 }
 
 void initialize_frame_rotation_empty(void){ 
-    /* Initialize rotation matrix to identity, this means that the
-       internal and absolute frame are just the same.
-    */   
+    //Initialize rotation matrix to identity, this means that the
+    //   internal and absolute frame are just the same.   
 
 
     r[_x_][_x_] = 1.0;
@@ -176,9 +174,9 @@ void internal_frame_get_rotation_matrix(float out[3][3]){
 }
 
 void initialize_rotation_frame(float *g, float *m){
-    /* Given the magnetic vector m and the gravity vector g, compute
-    the rotation matrix (r) from absolute frame (EST = x, NORD = y, UP = z)
-    to the internal frame.*/
+    //Given the magnetic vector m and the gravity vector g, compute
+    //the rotation matrix (r) from absolute frame (EST = x, NORD = y, UP = z)
+    //to the internal frame.
 
     float g_n[3], m_n[3], nord[3], up[3], est[3], norm;
     
@@ -260,4 +258,4 @@ float geo_to_internal_alt(float geo_alt, float geo_azi){
     float abs[3];
     geo_to_absolute(geo_alt, geo_azi, abs);
     return absolute_to_internal_alt(abs);
-}
+}*/

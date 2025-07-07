@@ -18,7 +18,7 @@ void geo_to_absolute(float alt, float azi, float *v);
 float absolute_to_geo_alt(float *v);
 float absolute_to_geo_azi(float *v);
 
-// Absolute <-> Internal
+/*// Absolute <-> Internal
 void initialize_rotation_frame(float *g, float *m);
 void initialize_frame_rotation_empty(void);
 void internal_frame_get_rotation_matrix(float out[3][3]);
@@ -32,6 +32,6 @@ void internal_to_absolute(float alt, float azi, float *a);
 float internal_to_geo_alt(float internal_alt, float internal_azi);
 float internal_to_geo_azi(float internal_alt, float internal_azi);
 float geo_to_internal_azi(float geo_alt, float geo_azi);
-float geo_to_internal_alt(float geo_alt, float geo_azi);
+float geo_to_internal_alt(float geo_alt, float geo_azi);*/
 
 #endif
