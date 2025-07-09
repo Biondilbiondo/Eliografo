@@ -75,6 +75,10 @@ void get_time(uint16_t *year, uint8_t *month, uint8_t *day, uint8_t *hours, uint
     *year = 1970;
 }
 
+float get_timestamp_RTC(void){
+    return (float) rtc.getHour() * 3600. + (float) rtc.getMinute() * 60 + rtc.getSecond() + rtc.getMicros() / 1e6;
+}
+
 void get_time_RTC(uint16_t *year, uint8_t *month, uint8_t *day, uint8_t *hours, uint8_t *minutes, float *seconds){
     *hours = rtc.getHour(true);
     *minutes = rtc.getMinute();
@@ -232,6 +236,15 @@ void update_sun_vec(void){
 }
 
 // Motors and Encoders Routine
+void motor_driver_enable(void){
+    digitalWrite(DRIVER_ENABLE, LOW);
+    delay(100);
+}
+
+void motor_driver_disable(void){
+    digitalWrite(DRIVER_ENABLE, HIGH);
+}
+
 void set_alt_motor_speed(int8_t speed){
     if(speed > 0){
         // Forward motion
@@ -323,39 +336,157 @@ void alt_motor_enable(void){
     alt_PID_enabled = true;
 }
 
+float azi_encoder_to_degrees(uint32_t val){
+    return (float) map(val, 0, 2500, 0, 360);
+}
 
+float alt_encoder_to_degrees(uint32_t val){
+    return (float) map(val, 0, 2500, 0, 360);
+}
 
 float read_azi_encoder(void){
-    // This is actual value in internal frame;
-    // NOTE: it should be in degrees and increasing ccw
-    float f_v = 0.0;
-    for(int i=0; i < AZI_ENCODER_OVERSAMPLING; i++){
-        f_v += (float) analogReadMilliVolts(AZI_ENCODER);
-        delay(1);
+    float f_v = 0.0, val, del, first;
+    for(int i=0; i < ENCODER_OVERSAMPLING+1; i++){
+        if(i == 0)
+            analogRead(AZI_ENCODER);
+        else{
+            val = azi_encoder_to_degrees(analogReadMilliVolts(AZI_ENCODER));
+            if(i==1){
+                f_v += val;
+                first = val;
+            }
+            else{
+                del = first - val;
+                if(del < -300){
+                    val -= 360;
+                }
+                if(del > 300){
+                    val += 360;
+                }
+                f_v += val;
+            }
+        }
+        delay(2);
     }
-    f_v /= AZI_ENCODER_OVERSAMPLING;
-    f_v *= (ENCODER_R1 + ENCODER_R2) / ENCODER_R2 ; // Real tension value
-    f_v /= 1000.0;
-    float deg = f_v * ENCODER_VOLT_TO_DEG - azi_encoder_zero;
+
+    f_v /= ENCODER_OVERSAMPLING;
+    float deg = f_v - azi_encoder_zero;
     if(deg < 0) deg+=360;
+    if(deg > 360) deg -= 360;
     return deg; // Just to put something here
 }
 
 float read_alt_encoder(void){
-    float f_v = 0.0;
-    for(int i=0; i < ALT_ENCODER_OVERSAMPLING; i++){
-        f_v += (float) analogReadMilliVolts(ALT_ENCODER);
-        delay(1);
+    float f_v = 0.0, val, del, first;
+    for(int i=0; i < ENCODER_OVERSAMPLING+1; i++){
+        if(i == 0)
+            analogRead(ALT_ENCODER);
+        else{
+            val = alt_encoder_to_degrees(analogReadMilliVolts(ALT_ENCODER));
+            if(i==1){
+                f_v += val;
+                first = val;
+            }
+            else{
+                del = first - val;
+                if(del < -300){
+                    val -= 360;
+                }
+                if(del > 300){
+                    val += 360;
+                }
+                f_v += val;
+            }
+        }
+        delay(2);
     }
-    f_v /= ALT_ENCODER_OVERSAMPLING;
-    // This is actual value in internal frame;
-    // NOTE: it should be in degrees and increasing rotating upward
-    
-    f_v *= (ENCODER_R1 + ENCODER_R2) / ENCODER_R2 ; // Real tension value
-    f_v /= 1000.0;
-    float deg = f_v * ENCODER_VOLT_TO_DEG - alt_encoder_zero;
+
+    f_v /= ENCODER_OVERSAMPLING;
+    float deg = f_v - alt_encoder_zero;
     if(deg < 0) deg+=360;
+    if(deg > 360) deg -= 360;
     return deg; // Just to put something here
+}
+
+void start_pid(void){
+    alt_PID_enabled = true;
+    azi_PID_enabled = true;
+}
+
+void pid_loop(void){
+    char outm[250];
+    if(alt_PID_enabled){
+        alt_encoder_val = read_alt_encoder();
+        sprintf(outm, "ALT ENC %f SETP %f\n", alt_encoder_val, alt_setpoint);
+        telnet.print(outm);
+        altPID.update();
+        set_alt_motor_speed((int8_t) alt_motor_speed);
+    }
+    if(azi_PID_enabled){
+        azi_encoder_val = read_azi_encoder();
+        sprintf(outm, "AZI ENC %f SETP %f\n", azi_encoder_val, azi_setpoint);
+        telnet.print(outm);
+        aziPID.update();
+        set_azi_motor_speed((int8_t) azi_motor_speed);
+    }
+    if(abs(aziPID.get_last_error()) < aziPID.get_min_error() && abs(altPID.get_last_error()) < altPID.get_min_error()){
+        // We have done, stop moving
+        telnet.print("Disabled\n");
+        azi_motor_standby();
+        alt_motor_standby();
+        azi_PID_enabled = false;
+        alt_PID_enabled = false;
+    }
+}
+
+void ray_to_setpoints(float alt, float azi){
+    geo_to_absolute(alt, azi, ory);
+    update_sun_vec();
+    get_normal_vec(sun, ory, mir);
+    alt_setpoint = absolute_to_geo_alt(mir);
+    azi_setpoint = absolute_to_geo_azi(mir);
+    if(azi_setpoint < 0) azi_setpoint += 360.0;
+}
+
+#define SCENE_LEN 5
+#define SCENE_DT 5.0
+bool run_scene(){
+    float now, next;
+    float scene[SCENE_LEN][2] = {{0.0, 0.0}, {0.0, 20.0}, {-20.0, 20.0}, {-20.0, 0.0}, {0.0, 0.0}};
+    char outm[250];
+
+    motor_driver_enable();
+    ray_to_setpoints(scene[0][0], scene[0][0]);
+    start_pid();
+    while(alt_PID_enabled || azi_PID_enabled) pid_loop();
+    telnet.print("Initial position\n");
+
+    now = get_timestamp_RTC();
+    next = now - 1;
+    
+    for(int j=0; j < 20; j++){
+    int i = 0;
+    next = now - 1;
+    while(i < SCENE_LEN){
+        now = get_timestamp_RTC();
+        if(now >= next){
+            ray_to_setpoints(scene[i][0], scene[i][1]);
+            next = now + SCENE_DT;
+            start_pid();
+            i++;
+            sprintf(outm, "STEP %d\n", i);
+            telnet.print(outm);
+        }
+        pid_loop();
+    }
+    while(now < next){
+        now = get_timestamp_RTC();
+        pid_loop();
+    }
+    }
+
+    motor_driver_disable();
+    return true;
 }
 
 // Telnet Shell commands
@@ -380,6 +511,8 @@ bool cmd_time(void){
     float s;
     get_time(&y, &m, &d, &h, &mi, &s);
     sprintf(buf, "%04d-%02d-%02dT%02d:%02d:%06.4fZ\n", y, m, d, h, mi, s);
+    telnet.print(buf);
+    sprintf(buf, "TIMESTAMP %f\n", get_timestamp_RTC());
     telnet.print(buf);
     return true;
 }
@@ -524,56 +657,41 @@ bool cmd_current_position(void){
 bool cmd_test_motor2(int8_t speed){
     char buf[256];
     
-    for(int i=0; i < 100; i++){
+    for(int i=0; i < 20; i++){
         set_alt_motor_speed(120);
         delay(100);
         alt_motor_standby();
         sprintf(buf, "ALT %f\n", read_alt_encoder());
         telnet.print(buf);
     }
-    for(int i=0; i < 100; i++){
+    telnet.print("\n");
+    for(int i=0; i < 20; i++){
+        set_alt_motor_speed(-120);
+        delay(100);
+        alt_motor_standby();
+        sprintf(buf, "ALT %f\n", read_alt_encoder());
+        telnet.print(buf);
+    }
+    telnet.print("\n");
+    for(int i=0; i < 20; i++){
         set_azi_motor_speed(120);
         delay(100);
         azi_motor_standby();
-        sprintf(buf, "ALT %f\n", read_azi_encoder());
+        sprintf(buf, "AZI%f\n", read_azi_encoder());
+        telnet.print(buf);
+    }
+    telnet.print("\n");
+    for(int i=0; i < 20; i++){
+        set_azi_motor_speed(-120);
+        delay(100);
+        azi_motor_standby();
+        sprintf(buf, "AZI %f\n", read_azi_encoder());
         telnet.print(buf);
     }
 
     return true;
 }
 
-//TODO: Remove
-bool cmd_alt_goto(char *buf){
-    float dest, pos;
-    char outm[256];
-    sscanf(buf, "%f", &dest);
-    pos = read_alt_encoder();
-    sprintf(outm, "GOING TO ALT %.4f\n", pos);
-    telnet.print(outm);
-    if(pos > dest){
-        for(int i=0; i<1000;i++){
-            set_alt_motor_speed(-120);
-            delay(100);
-            alt_motor_standby();
-            pos = read_alt_encoder();
-            sprintf(outm, "INTERNAL ALT %.4f\n", pos);
-            telnet.print(outm);
-            if(pos < dest) break;
-        }
-    }
-    else{
-        for(int i=0; i<1000;i++){
-            set_alt_motor_speed(120);
-            delay(100);
-            alt_motor_standby();
-            pos = read_alt_encoder();
-            sprintf(outm, "INTERNAL ALT %.4f\n", pos);
-            telnet.print(outm);
-            if(pos > dest) break;
-        }
-    }
-    return true;
-}
 //TODO: Remove
 bool cmd_alt_pid_setpoint(char *buf){
     float dest;
@@ -608,44 +726,6 @@ bool cmd_alt_pid_disable(void){
     return true;
 }
 
-bool cmd_reconfigure(void){
-    manual_control_enabled = false;
-    solar_control_enabled = false;
-    alt_PID_enabled = false;
-    azi_PID_enabled = false;
-
-    azi_encoder_zero = get_float_cfg("azie0");
-    alt_encoder_zero = get_float_cfg("alte0");
-
-    azi_encoder_val = read_azi_encoder();
-    alt_encoder_val = read_alt_encoder();
-    azi_setpoint = azi_encoder_val;
-    alt_setpoint = alt_encoder_val;
-    alt_motor_speed = 0.;
-    azi_motor_speed = 0.;
-
-    aziPID.set_PID_params(get_float_cfg("azi_kp"),
-                          get_float_cfg("azi_ki"),
-                          get_float_cfg("azi_kd"),
-                          -126, 126,
-                          get_float_cfg("azi_me"));
-
-    altPID.set_PID_params(get_float_cfg("alt_kp"),
-                          get_float_cfg("alt_ki"),
-                          get_float_cfg("alt_kd"),
-                          -126, 126,
-                          get_float_cfg("alt_me"));
-
-    sun[_x_] = sun[_y_] = sun[_z_] = 0.;
-    mir[_x_] = mir[_y_] = mir[_z_] = 0.;
-    ory[_x_] = ory[_y_] = ory[_z_] = 0.;
-    
-    current_lon = get_float_cfg("lon");
-    current_lat = get_float_cfg("lat");
-
-    return true;
-}
-
 bool cmd_control_reset(void){
     solar_control_enabled = false;
     manual_control_enabled = false;
@@ -655,7 +735,7 @@ bool cmd_control_reset(void){
     return true;
 }
 
-bool cmd_manual_control_geo(char *buf){
+bool cmd_manual_control(char *buf){
     float alt, azi;
 
     sscanf(buf, "%f%f", &alt, &azi);
@@ -667,24 +747,7 @@ bool cmd_manual_control_geo(char *buf){
     alt_PID_enabled = true;
     
     char msg[256];
-    sprintf(msg, "Moving to GEO ALT %f AZI %f (INT ALT %f, INT AZI %f)\n", alt, azi, alt_setpoint, azi_setpoint);
-    telnet.print(msg);
-    return true;
-}
-
-bool cmd_manual_control_internal(char *buf){
-    float alt, azi;
-
-    sscanf(buf, "%f%f", &alt, &azi);
-    cmd_control_reset();
-    alt_setpoint = alt;
-    azi_setpoint = azi;
-    manual_control_enabled = true;
-    azi_PID_enabled = true;
-    alt_PID_enabled = true;
-    
-    char msg[256];
-    sprintf(msg, "Moving to GEO ALT %f, GEO AZI %f\n", alt, azi);
+    sprintf(msg, "Moving to ALT %f AZI %f\n", alt_setpoint, azi_setpoint);
     telnet.print(msg);
     return true;
 }
@@ -703,6 +766,52 @@ bool cmd_solar_control(char *buf){
     return true;
 }
 
+bool cmd_driver_on(void){
+    motor_driver_enable();
+    return true;
+}
+
+bool cmd_driver_off(void){
+    motor_driver_disable();
+    return true;
+}
+
+bool cmd_alt_move(char *buf){
+    int t;
+
+    sscanf(buf, "%d", &t);
+    if(t > 0){
+        set_alt_motor_speed(120);
+        delay(t);
+        alt_motor_standby();
+    }
+    else {
+        set_alt_motor_speed(-120);
+        delay(-t);
+        alt_motor_standby();
+    }
+    
+    return true;
+}
+
+bool cmd_azi_move(char *buf){
+    int t;
+
+    sscanf(buf, "%d", &t);
+    if(t > 0){
+        set_azi_motor_speed(120);
+        delay(t);
+        azi_motor_standby();
+    }
+    else {
+        set_azi_motor_speed(-120);
+        delay(-t);
+        azi_motor_standby();
+    }
+    
+    return true;
+}
+
 bool cmd_parse(char *buf){
     char *tok, *rest;
     const char *delim = " \n\r";
@@ -711,6 +820,9 @@ bool cmd_parse(char *buf){
 
     if(tok == NULL){
         return true;
+    }
+    else if(strcmp(tok, "sc") == 0 || strcmp(tok, "solar-control") == 0){
+        return cmd_solar_control(rest);
     }
     else if(strcmp(tok, "set-ory") == 0){
         return cmd_set_ory(rest);
@@ -755,40 +867,11 @@ bool cmd_parse(char *buf){
     else if(strcmp(tok, "test-motors") == 0){
         return cmd_test_motor2(128);
     }
-    else if(strcmp(tok, "alt-fwd") == 0){
-        telnet.print("ALT FWD\n");
-        set_alt_motor_speed(120);
-        sleep(2);
-        telnet.print("ALT STANDBY\n");
-        alt_motor_standby();
-        return true;
+    else if(strcmp(tok, "alt-move") == 0){
+        return cmd_alt_move(rest);
     }
-    else if(strcmp(tok, "alt-bck") == 0){
-        telnet.print("ALT REV\n");
-        set_alt_motor_speed(-120);
-        sleep(2);
-        telnet.print("ALT STANDBY\n");
-        alt_motor_standby();
-        return true;
-    }
-    else if(strcmp(tok, "azi-fwd") == 0){
-        telnet.print("AZI FWD\n");
-        set_azi_motor_speed(120);
-        sleep(2);
-        telnet.print("AZI STANDBY\n");
-        azi_motor_standby();
-        return true;
-    }
-    else if(strcmp(tok, "azi-bck") == 0){
-        telnet.print("AZI REV\n");
-        set_azi_motor_speed(-120);
-        sleep(2);
-        telnet.print("AZI STANDBY\n");
-        azi_motor_standby();
-        return true;
-    }
-    else if(strcmp(tok, "alt-goto") == 0){
-        return cmd_alt_goto(rest);
+    else if(strcmp(tok, "azi-move") == 0){
+        return cmd_azi_move(rest);
     }
     else if(strcmp(tok, "alt-pid-setpoint") == 0){
         return cmd_alt_pid_setpoint(rest);
@@ -799,22 +882,22 @@ bool cmd_parse(char *buf){
     else if(strcmp(tok, "pid-vals") == 0){
         return cmd_pid_vals();
     }
-    else if(strcmp(tok, "reconfigure") == 0){
-        return cmd_pid_vals();
-    }
-    else if(strcmp(tok, "mcg") == 0 || strcmp(tok, "manual-control-geo") == 0){
-        return cmd_manual_control_geo(rest);
-    }
-    else if(strcmp(tok, "mci") == 0 || strcmp(tok, "manual-control-int") == 0){
-        return cmd_manual_control_internal(rest);
-    }
-    else if(strcmp(tok, "sc") == 0 || strcmp(tok, "solar-control") == 0){
-        return cmd_solar_control(rest);
+    else if(strcmp(tok, "mc") == 0){
+        return cmd_manual_control(rest);
     }
     else if(strcmp(tok, "control-reset") == 0 || strcmp(tok, "stop") == 0){
         alt_motor_standby();
         azi_motor_standby();
         return cmd_control_reset();
+    }
+    else if(strcmp(tok, "driver-on") == 0){
+        return cmd_driver_on();
+    }
+    else if(strcmp(tok, "driver-off") == 0){
+        return cmd_driver_off();
+    }
+    else if(strcmp(tok, "test_scene") == 0){
+        return run_scene();
     }
     else{
         return cmd_err(tok);
@@ -831,7 +914,7 @@ void onTelnetConnect(String ip) {
     char buf[16];
     sprintf(buf, "%012x\n", chip_id);
   
-    telnet.println("\nWelcome to Heliograph\nIP: " + telnet.getIP() + "\nID: " + buf);
+    telnet.println("\nWelcome to heliograph\nIP: " + telnet.getIP() + "\nID: " + buf);
     telnet.println("Use quit to disconnect");
     telnet.print("[  ] > ");
 }
@@ -859,13 +942,13 @@ void onTelnetInput(String str) {
     a = new char[str.length() + 1];
     strncpy(a, str.c_str(), str.length());
     a[str.length()] = '\0';
+
     if( cmd_parse(a) ){
-        telnet.print("[OK] ");
+        telnet.print("[OK] > ");
     }
     else{
-        telnet.print("[!!] ");
+        telnet.print("[!!] > ");
     }
-    telnet.print("> ");
 }
 
 void setupTelnet() {  
@@ -891,6 +974,9 @@ void setup_pref(void){
 
 
 void setup_motors(){
+    pinMode(DRIVER_ENABLE, OUTPUT);
+    motor_driver_disable();
+
     pinMode(ALT_MOTOR_DIR1, OUTPUT);
     pinMode(ALT_MOTOR_DIR2, OUTPUT);
     pinMode(ALT_MOTOR_PWM, OUTPUT);
@@ -905,6 +991,9 @@ void setup_motors(){
     ledcSetup(AZI_MOTOR_PWM_CH, MOTOR_PWM_FREQ, MOTOR_PWM_RES);
     ledcAttachPin(AZI_MOTOR_PWM, AZI_MOTOR_PWM_CH);
 
+    //analogSetWidth(11);               // 11Bit resolution
+    //analogSetAttenuation(ADC_0db);
+
     azi_encoder_zero = get_float_cfg("azie0");
     alt_encoder_zero = get_float_cfg("alte0");
 
@@ -915,13 +1004,13 @@ void setup_motors(){
     aziPID.set_PID_params(get_float_cfg("azi_kp"),
                           get_float_cfg("azi_ki"),
                           get_float_cfg("azi_kd"),
-                          50, 126,
+                          80, 126,
                           get_float_cfg("azi_me"));
 
     altPID.set_PID_params(get_float_cfg("alt_kp"),
                           get_float_cfg("alt_ki"),
                           get_float_cfg("alt_kd"),
-                          50, 126,
+                          80, 126,
                           get_float_cfg("alt_me"));
 
     //Interrupt
@@ -983,10 +1072,11 @@ void setup() {
     Serial.printf("HelioGraph %012x", chip_id);
 
     // TODO, this is Pisa
-    current_lon = 10.40;// get_float_cfg("lon");
-    current_lat = 43.72; //get_float_cfg("lat");
 
     setup_pref();
+    current_lon = get_float_cfg("lon");
+    current_lat = get_float_cfg("lat");
+
     setup_wifi();
     if(WiFi_ok) setup_ntp();
     setup_rtc();
@@ -999,53 +1089,15 @@ void loop() {
     telnet.loop();
 
     char outm[256];
-    if(true){
+
+    if(manual_control_enabled || solar_control_enabled){
         if(solar_control_enabled){
-            // Compute the ory position in abs frame
-            geo_to_absolute(ory_alt, ory_azi, ory);
-            //sprintf(outm, "ORY %f %f %f\n", ory[0], ory[1], ory[2]);
-            //telnet.print(outm);
-            // Compute sun position
-            
-            update_sun_vec();
-            //sprintf(outm, "SUN %f %f %f\n", sun[0], sun[1], sun[2]);
-            //telnet.print(outm);
-            // Just for debug
-            //float sun_alt = absolute_to_geo_alt(sun),
-            //      sun_azi = absolute_to_geo_azi(sun);
-            //sprintf(outm, "SUN %f %f\n", sun_alt, sun_azi);
-            //telnet.print(outm);
-
-
-            get_normal_vec(sun, ory, mir);
-            //sprintf(outm, "MIR %f %f %f\n", mir[0], mir[1], mir[2]);
-            //telnet.print(outm);
-            alt_setpoint = absolute_to_geo_alt(mir);
-            azi_setpoint = absolute_to_geo_azi(mir);
-
-            if(azi_setpoint < 0) azi_setpoint += 360.0;
-            sprintf(outm, "SC INTERNAL SETP %f %f\n", azi_setpoint, alt_setpoint);
-            //telnet.print(outm);
+            ray_to_setpoints(ory_alt, ory_azi);
         }
-
-        if(manual_control_enabled || solar_control_enabled){
-            if(alt_PID_enabled){
-                alt_encoder_val = read_alt_encoder();
-                altPID.update();
-                set_alt_motor_speed((int8_t) alt_motor_speed);
-            }
-            if(azi_PID_enabled){
-                azi_encoder_val = read_azi_encoder();
-                aziPID.update();
-                set_azi_motor_speed((int8_t) azi_motor_speed);
-            }
-            if(abs(aziPID.get_last_error()) < aziPID.get_min_error() && abs(altPID.get_last_error()) < altPID.get_min_error()){
-                // We have done, stop moving
-                azi_motor_standby();
-                alt_motor_standby();
-                manual_control_enabled = false;
-                solar_control_enabled = false;
-            }
+        pid_loop();
+        if(!azi_PID_enabled && !alt_PID_enabled){
+            manual_control_enabled = false;
+            solar_control_enabled = false;
         }
     }
 }
