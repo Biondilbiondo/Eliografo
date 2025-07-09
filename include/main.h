@@ -11,6 +11,7 @@
 #include <NTPClient.h>
 // Real Time Clock
 #include <ESP32Time.h>
+#include "RTClib.h"
 // SolTrack
 #include <SolTrack.h>
 // Math Lib

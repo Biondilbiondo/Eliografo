@@ -16,7 +16,8 @@ WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP);
 bool NTP_ok = false;
 
-ESP32Time rtc;
+ESP32Time internal_rtc;
+RTC_DS1307 rtc;
 bool RTC_ok = false;
 
 #ifdef USE_MPU6050
@@ -67,11 +68,6 @@ void get_time(uint16_t *year, uint8_t *month, uint8_t *day, uint8_t *hours, uint
         return;
     }
 
-    if(NTP_ok){
-        get_time_RTC(year, month, day, hours, minutes, seconds);
-        return;
-    }
-
     *hours = 0;
     *minutes = 0;
     *seconds = 0.;
@@ -81,16 +77,26 @@ void get_time(uint16_t *year, uint8_t *month, uint8_t *day, uint8_t *hours, uint
 }
 
 float get_timestamp_RTC(void){
-    return (float) rtc.getHour() * 3600. + (float) rtc.getMinute() * 60 + rtc.getSecond() + rtc.getMicros() / 1e6;
+    return (float) internal_rtc.getHour() * 3600. + (float) internal_rtc.getMinute() * 60 + internal_rtc.getSecond() + internal_rtc.getMicros() / 1e6;
 }
 
 void get_time_RTC(uint16_t *year, uint8_t *month, uint8_t *day, uint8_t *hours, uint8_t *minutes, float *seconds){
-    *hours = rtc.getHour(true);
-    *minutes = rtc.getMinute();
-    *seconds = (float) rtc.getSecond() + (float) rtc.getMillis() / 1000.0;
-    *day = rtc.getDay();
-    *month = rtc.getMonth() + 1;
-    *year = rtc.getYear();
+    DateTime now = rtc.now();
+    *hours = now.hour();
+    *minutes = now.minute();
+    *seconds = (float) now.second();
+    *day = now.day();
+    *month = now.month();
+    *year = now.year();
+}
+
+void get_time_internal_RTC(uint16_t *year, uint8_t *month, uint8_t *day, uint8_t *hours, uint8_t *minutes, float *seconds){
+    *hours = internal_rtc.getHour(true);
+    *minutes = internal_rtc.getMinute();
+    *seconds = (float) internal_rtc.getSecond() + (float) internal_rtc.getMillis() / 1000.0;
+    *day = internal_rtc.getDay();
+    *month = internal_rtc.getMonth() + 1;
+    *year = internal_rtc.getYear();
 }
 
 void get_time_NTP(uint16_t *year, uint8_t *month, uint8_t *day, uint8_t *hours, uint8_t *minutes, float *seconds){
@@ -422,21 +428,21 @@ void pid_loop(void){
     char outm[250];
     if(alt_PID_enabled){
         alt_encoder_val = read_alt_encoder();
-        //sprintf(outm, "ALT ENC %f SETP %f\n", alt_encoder_val, alt_setpoint);
-        //telnet.print(outm);
+        sprintf(outm, "ALT ENC %f SETP %f\n", alt_encoder_val, alt_setpoint);
+        telnet.print(outm);
         altPID.update();
         set_alt_motor_speed((int8_t) alt_motor_speed);
     }
     if(azi_PID_enabled){
         azi_encoder_val = read_azi_encoder();
-        //sprintf(outm, "AZI ENC %f SETP %f\n", azi_encoder_val, azi_setpoint);
-        //telnet.print(outm);
+        sprintf(outm, "AZI ENC %f SETP %f\n", azi_encoder_val, azi_setpoint);
+        telnet.print(outm);
         aziPID.update();
         set_azi_motor_speed((int8_t) azi_motor_speed);
     }
     if(abs(aziPID.get_last_error()) < aziPID.get_min_error() && abs(altPID.get_last_error()) < altPID.get_min_error()){
         // We have done, stop moving
-        //telnet.print("Disabled\n");
+        telnet.print("Disabled\n");
         azi_motor_standby();
         alt_motor_standby();
         azi_PID_enabled = false;
@@ -543,6 +549,39 @@ bool cmd_sleep(char *buf){
     return true;
 }
 
+bool cmd_list_i2c_devices(void){
+    byte error, address;
+    int nDevices;
+    telnet.println("Scanning...");
+    nDevices = 0;
+    for(address = 1; address < 127; address++ ) {
+        Wire.beginTransmission(address);
+        error = Wire.endTransmission();
+        if (error == 0) {
+            telnet.print("I2C device found at address 0x");
+            if (address<16) {
+                telnet.print("0");
+            }
+            telnet.println(address,HEX);
+            nDevices++;
+        }
+        else if (error==4) {
+            telnet.print("Unknow error at address 0x");
+            if (address<16) {
+                telnet.print("0");
+            }
+            telnet.println(address,HEX);
+        }    
+    }
+    if (nDevices == 0) {
+        telnet.println("No I2C devices found\n");
+    }
+    else {
+        telnet.println("done\n");
+    }
+    return true;
+}
+
 bool cmd_err(char *cmd){
     char buf[128];
     sprintf(buf, "command unknown %s\n", cmd);
@@ -555,7 +594,10 @@ bool cmd_time(void){
     uint16_t y;
     uint8_t m,d, h, mi;
     float s;
-    get_time(&y, &m, &d, &h, &mi, &s);
+    get_time_RTC(&y, &m, &d, &h, &mi, &s);
+    sprintf(buf, "%04d-%02d-%02dT%02d:%02d:%06.4fZ\n", y, m, d, h, mi, s);
+    telnet.print(buf);
+    get_time_internal_RTC(&y, &m, &d, &h, &mi, &s);
     sprintf(buf, "%04d-%02d-%02dT%02d:%02d:%06.4fZ\n", y, m, d, h, mi, s);
     telnet.print(buf);
     sprintf(buf, "TIMESTAMP %f\n", get_timestamp_RTC());
@@ -954,6 +996,9 @@ bool cmd_parse(char *buf){
     else if(strcmp(tok, "sleep") == 0){
         return cmd_sleep(rest);
     }
+    else if(strcmp(tok, "i2c-scan") == 0){
+        return cmd_list_i2c_devices();
+    }
     else{
         return cmd_err(tok);
     }
@@ -1115,11 +1160,22 @@ void setup_ntp(void){
 }
 
 void setup_rtc(void){
+    rtc.begin();
     if(NTP_ok){
         update_time_from_NTP();
-        rtc.setTime(timeClient.getEpochTime());
+        DateTime now(timeClient.getEpochTime());
+        rtc.adjust(now);
+        internal_rtc.setTime(timeClient.getEpochTime());
         RTC_ok = true;
     }
+    else{
+        // TODO Copy from RTC to internal
+        ;
+    }
+}
+
+void setup_i2c(void){
+    Wire.begin();
 }
 
 void setup() {
@@ -1142,6 +1198,7 @@ void setup() {
     current_lat = get_float_cfg("lat");
     setup_littlefs();
 
+    setup_i2c();
 
     setup_wifi();
     if(WiFi_ok) setup_ntp();
@@ -1161,8 +1218,6 @@ void loop() {
             ray_to_setpoints(ory_alt, ory_azi);
         }
         pid_loop();
-        if(logs_cnt < 1000) logs[logs_cnt++] = alt_encoder_val;
-        cmd_pid_vals();
         if(!azi_PID_enabled && !alt_PID_enabled){
             manual_control_enabled = false;
             solar_control_enabled = false;
