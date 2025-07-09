@@ -49,6 +49,11 @@ float mir[3];
 float ory[3];
 float ory_alt = 0.0, ory_azi = 0.0;
 
+int bootn = 0;
+
+float logs[1000];
+int logs_cnt = 0;
+
 // Time/RTC Routines
 void update_time_from_NTP(void){
     while(!timeClient.update()) {
@@ -417,21 +422,21 @@ void pid_loop(void){
     char outm[250];
     if(alt_PID_enabled){
         alt_encoder_val = read_alt_encoder();
-        sprintf(outm, "ALT ENC %f SETP %f\n", alt_encoder_val, alt_setpoint);
-        telnet.print(outm);
+        //sprintf(outm, "ALT ENC %f SETP %f\n", alt_encoder_val, alt_setpoint);
+        //telnet.print(outm);
         altPID.update();
         set_alt_motor_speed((int8_t) alt_motor_speed);
     }
     if(azi_PID_enabled){
         azi_encoder_val = read_azi_encoder();
-        sprintf(outm, "AZI ENC %f SETP %f\n", azi_encoder_val, azi_setpoint);
-        telnet.print(outm);
+        //sprintf(outm, "AZI ENC %f SETP %f\n", azi_encoder_val, azi_setpoint);
+        //telnet.print(outm);
         aziPID.update();
         set_azi_motor_speed((int8_t) azi_motor_speed);
     }
     if(abs(aziPID.get_last_error()) < aziPID.get_min_error() && abs(altPID.get_last_error()) < altPID.get_min_error()){
         // We have done, stop moving
-        telnet.print("Disabled\n");
+        //telnet.print("Disabled\n");
         azi_motor_standby();
         alt_motor_standby();
         azi_PID_enabled = false;
@@ -448,15 +453,44 @@ void ray_to_setpoints(float alt, float azi){
     if(azi_setpoint < 0) azi_setpoint += 360.0;
 }
 
-#define SCENE_LEN 5
-#define SCENE_DT 5.0
+bool read_scene_from_file(char *path, float *scene_data, int seq_len){
+    String s;
+    Serial.printf("Reading file: %s\r\n", path);
+
+    File file = LittleFS.open(path);
+    if(!file || file.isDirectory()){
+        Serial.println("- failed to open file for reading");
+        return false;
+    }
+
+    Serial.println("- read from file:");
+    int i = 0;
+    while(file.available() && i < seq_len){
+        s = file.readStringUntil('\n');
+        sscanf(s.c_str(), "%f%f", &(scene_data[i*2]), &(scene_data[i*2+1]));
+        i++;
+    }
+    file.close();
+    return true;
+}
+
+#define SCENE_LEN 40
+#define SCENE_DT .25
 bool run_scene(){
     float now, next;
-    float scene[SCENE_LEN][2] = {{0.0, 0.0}, {0.0, 20.0}, {-20.0, 20.0}, {-20.0, 0.0}, {0.0, 0.0}};
+    float scene[SCENE_LEN*2];
     char outm[250];
+    char path[] = "/1.txt";
 
+    if(!read_scene_from_file(path, scene, SCENE_LEN)){
+        return false;
+    }
+    for(int i=0; i < SCENE_LEN; i++){
+        sprintf(outm, "%f %f\n", scene[i*2], scene[i*2+1]);
+        telnet.print(outm);
+    }
     motor_driver_enable();
-    ray_to_setpoints(scene[0][0], scene[0][0]);
+    ray_to_setpoints(scene[0], scene[1]);
     start_pid();
     while(alt_PID_enabled || azi_PID_enabled) pid_loop();
     telnet.print("Initial position\n");
@@ -464,13 +498,12 @@ bool run_scene(){
     now = get_timestamp_RTC();
     next = now - 1;
     
-    for(int j=0; j < 20; j++){
     int i = 0;
     next = now - 1;
     while(i < SCENE_LEN){
         now = get_timestamp_RTC();
         if(now >= next){
-            ray_to_setpoints(scene[i][0], scene[i][1]);
+            ray_to_setpoints(scene[i*2], scene[i*2+1]);
             next = now + SCENE_DT;
             start_pid();
             i++;
@@ -483,7 +516,6 @@ bool run_scene(){
         now = get_timestamp_RTC();
         pid_loop();
     }
-    }
 
     motor_driver_disable();
     return true;
@@ -494,6 +526,20 @@ bool cmd_id(void){
     char buf[16];
     sprintf(buf, "%012x\n", chip_id);
     telnet.print(buf);
+    return true;
+}
+
+bool cmd_sleep(char *buf){
+#define uS_TO_S_FACTOR 1000000ULL  // Conversion factor for micro seconds to seconds
+    uint64_t tts;
+    sscanf(buf, "%d", &tts);
+    motor_driver_enable();
+    alt_setpoint = 270.;
+    azi_setpoint = 0.;
+    start_pid();
+    while(alt_PID_enabled || azi_PID_enabled) pid_loop();
+    motor_driver_disable();
+    /*Go in sleep here*/
     return true;
 }
 
@@ -558,6 +604,12 @@ bool cmd_pid_vals(void){
     telnet.print(buf);
     sprintf(buf, "AZI: SPEED %f VAL %f SET %f\n", azi_motor_speed, azi_encoder_val, azi_setpoint);
     telnet.print(buf);
+    sprintf(buf, "%f\n\n", get_timestamp_RTC());
+    telnet.print(buf);
+    for(int i=0; i<logs_cnt; i++){
+        sprintf(buf, "log: %d %f\n", i, logs[i]);
+        telnet.print(buf);
+    }
     return true;
 }
 
@@ -858,7 +910,7 @@ bool cmd_parse(char *buf){
         return cmd_mirror_log();
     }
     else if(strcmp(tok, "quit") == 0){
-        telnet.println("Use quit to disconnect");
+        telnet.disconnectClient();
         return true;
     }
     else if(strcmp(tok, "current-position") == 0){
@@ -896,8 +948,11 @@ bool cmd_parse(char *buf){
     else if(strcmp(tok, "driver-off") == 0){
         return cmd_driver_off();
     }
-    else if(strcmp(tok, "test_scene") == 0){
+    else if(strcmp(tok, "test-scene") == 0){
         return run_scene();
+    }
+    else if(strcmp(tok, "sleep") == 0){
+        return cmd_sleep(rest);
     }
     else{
         return cmd_err(tok);
@@ -972,6 +1027,15 @@ void setup_pref(void){
     HGPrefs.begin("hg", PREF_RW_MODE);
 }
 
+void setup_littlefs(void){
+    if(!LittleFS.begin(true)){
+      Serial.println("LittleFS Mount Failed");
+      return;
+   }
+   else{
+       Serial.println("Little FS Mounted Successfully");
+   }
+}
 
 void setup_motors(){
     pinMode(DRIVER_ENABLE, OUTPUT);
@@ -1070,12 +1134,14 @@ void setup() {
     Serial.begin(9600);
 
     Serial.printf("HelioGraph %012x", chip_id);
-
+    Serial.printf("Bootnumber %d", bootn++);
     // TODO, this is Pisa
 
     setup_pref();
     current_lon = get_float_cfg("lon");
     current_lat = get_float_cfg("lat");
+    setup_littlefs();
+
 
     setup_wifi();
     if(WiFi_ok) setup_ntp();
@@ -1086,15 +1152,17 @@ void setup() {
 }
 
 void loop() {
-    telnet.loop();
+    if(WiFi_ok) telnet.loop();
 
     char outm[256];
-
+    
     if(manual_control_enabled || solar_control_enabled){
         if(solar_control_enabled){
             ray_to_setpoints(ory_alt, ory_azi);
         }
         pid_loop();
+        if(logs_cnt < 1000) logs[logs_cnt++] = alt_encoder_val;
+        cmd_pid_vals();
         if(!azi_PID_enabled && !alt_PID_enabled){
             manual_control_enabled = false;
             solar_control_enabled = false;

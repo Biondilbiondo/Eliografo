@@ -32,6 +32,10 @@
 // PID motor control
 #include "ring_pid.h"
 
+// Little FS to save our scenes
+#include "FS.h"
+#include <LittleFS.h>
+
 // PWM definitions
 #define MOTOR_PWM_RES 8
 #define MOTOR_PWM_FREQ 35000

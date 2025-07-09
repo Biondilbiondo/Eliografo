@@ -52,12 +52,6 @@ void ringPID::update(void){
         return;
     }
 
-    //sprintf(outm, "SETP %f - INP %f = ERR %f\n", *setpoint, *input, error);
-    //telnet.print(outm);
-    //Serial.print(outm);
-    //sprintf(outm, "ERR %f MIN ERR %f\n", error, min_error);
-    //telnet.print(outm);
-    //Serial.print(outm);
     float p_comp = kp * error;
     float i_comp = 0.0;
     float d_comp = 0.0;
@@ -71,10 +65,6 @@ void ringPID::update(void){
         if(*output < -outmax) *output = -outmax;
         if(*output > -outmin) *output = -outmin;
     }
-
-    //sprintf(outm, "ERROR %f P %f D %f I %f OUT %f\n", error, p_comp, d_comp, i_comp, *output);
-    //telnet.print(outm);
-    //Serial.print(outm);
 
     lastT=now;
 }
