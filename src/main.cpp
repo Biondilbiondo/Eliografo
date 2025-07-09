@@ -156,7 +156,7 @@ void get_time(uint16_t *year, uint8_t *month, uint8_t *day, uint8_t *hours, uint
 // Scheduled tasks
 void add_scheduled_task(uint32_t h, uint32_t m, uint32_t s){
     if(task_cnt < MAX_DAILY_TASKS){
-        sch_timestamp[task_cnt] = /*h * 3600 + m * 60 +*/ s;
+        sch_timestamp[task_cnt] = h * 3600 + m * 60 + s;
         task_cnt++;
     }
 }
@@ -169,7 +169,7 @@ void schedule_task_loop(void){
     uint8_t minutes;
     float seconds;
     get_time(&year, &month, &day, &hours, &minutes, &seconds);
-    float timestamp = /*hours * 3600 + minutes * 60 +*/ seconds;
+    float timestamp = hours * 3600 + minutes * 60 + seconds;
     for(int i=0; i<task_cnt; i++){
         if(sch_run[i]){ 
             // Reload
