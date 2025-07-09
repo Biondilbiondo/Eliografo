@@ -30,6 +30,8 @@
 #include <Adafruit_Sensor.h>
 #include <Wire.h>
 
+#include <Adafruit_ADS1X15.h>
+
 // PID motor control
 #include "ring_pid.h"
 

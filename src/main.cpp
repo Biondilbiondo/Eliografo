@@ -18,7 +18,7 @@ bool NTP_ok = false;
 
 ESP32Time internal_rtc;
 RTC_DS1307 rtc;
-bool RTC_ok = false;
+bool RTC_ok = false, internal_RTC_ok = false;
 
 #ifdef USE_MPU6050
 Adafruit_MPU6050 mpu;
@@ -29,8 +29,18 @@ Adafruit_Sensor *accelerometer, *gyroscope, *magnetometer;
 
 bool MPU_ok = false, ROTF_ok=false;
 
+Adafruit_ADS1115 external_adc;
+bool external_ADC_ok = false;
+
 // Non volatile memory
 Preferences HGPrefs; 
+
+// Daily Tasks
+#define MAX_DAILY_TASKS 32
+#define SCH_TIME_DEL 1
+uint64_t sch_timestamp[MAX_DAILY_TASKS];
+bool sch_run[MAX_DAILY_TASKS] = {false};
+uint32_t task_cnt = 0;
 
 // Control variables
 float azi_setpoint, alt_setpoint,
@@ -60,20 +70,6 @@ void update_time_from_NTP(void){
     while(!timeClient.update()) {
         timeClient.forceUpdate();
     }
-}
-
-void get_time(uint16_t *year, uint8_t *month, uint8_t *day, uint8_t *hours, uint8_t *minutes, float *seconds){
-    if(RTC_ok){
-        get_time_RTC(year, month, day, hours, minutes, seconds);
-        return;
-    }
-
-    *hours = 0;
-    *minutes = 0;
-    *seconds = 0.;
-    *day = 1;
-    *month = 1;
-    *year = 1970;
 }
 
 float get_timestamp_RTC(void){
@@ -135,8 +131,62 @@ void get_time_NTP(uint16_t *year, uint8_t *month, uint8_t *day, uint8_t *hours, 
     (*day) = rawTime + 1;
 }
 
-// Preferences Routines
+void get_time(uint16_t *year, uint8_t *month, uint8_t *day, uint8_t *hours, uint8_t *minutes, float *seconds){
+    if(RTC_ok){
+        get_time_RTC(year, month, day, hours, minutes, seconds);
+        return;
+    }
+    if(NTP_ok){
+        get_time_NTP(year, month, day, hours, minutes, seconds);
+        return;
+    }
+    if(internal_RTC_ok){
+        get_time_internal_RTC(year, month, day, hours, minutes, seconds);
+        return;
+    }
 
+    *hours = 0;
+    *minutes = 0;
+    *seconds = 0.;
+    *day = 1;
+    *month = 1;
+    *year = 1970;
+}
+
+// Scheduled tasks
+void add_scheduled_task(uint32_t h, uint32_t m, uint32_t s){
+    if(task_cnt < MAX_DAILY_TASKS){
+        sch_timestamp[task_cnt] = /*h * 3600 + m * 60 +*/ s;
+        task_cnt++;
+    }
+}
+
+void schedule_task_loop(void){
+    uint16_t year;
+    uint8_t month;
+    uint8_t day;
+    uint8_t hours;
+    uint8_t minutes;
+    float seconds;
+    get_time(&year, &month, &day, &hours, &minutes, &seconds);
+    float timestamp = /*hours * 3600 + minutes * 60 +*/ seconds;
+    for(int i=0; i<task_cnt; i++){
+        if(sch_run[i]){ 
+            // Reload
+            if(abs(timestamp - (float) sch_timestamp[i]) > 2 * SCH_TIME_DEL) sch_run[i] = false;
+            // Skip
+            continue;
+        }
+
+        if(abs(timestamp - (float) sch_timestamp[i]) < SCH_TIME_DEL){
+            telnet.print("Running daily task\n");
+            telnet.printf("%02d at %02d:%02d:%02d\n", i, hours, minutes, (int) seconds);
+            sch_run[i] = true;
+        }   
+    }
+}
+
+// Preferences Routines
 bool cfg_key_exists(const char *key){
     return HGPrefs.isKey(key);
 }
@@ -388,6 +438,8 @@ float read_azi_encoder(void){
 }
 
 float read_alt_encoder(void){
+    /*  adc0 = ads.readADC_SingleEnded(0);
+        volts0 = ads.computeVolts(adc0);*/
     float f_v = 0.0, val, del, first;
     for(int i=0; i < ENCODER_OVERSAMPLING+1; i++){
         if(i == 0)
@@ -525,6 +577,27 @@ bool run_scene(){
 
     motor_driver_disable();
     return true;
+}
+
+bool cmd_system_status(void){
+    if(NTP_ok) 
+        telnet.println("NTP: OK");
+    else
+        telnet.println("NTP: NOT OK");
+    if(RTC_ok) 
+        telnet.println("RTC: OK");
+    else
+        telnet.println("RTC: NOT OK");
+    if(internal_RTC_ok) 
+        telnet.println("internal RTC: OK");
+    else
+        telnet.println("internal RTC: NOT OK");
+    if(external_ADC_ok) 
+        telnet.println("external ADC: OK");
+    else
+        telnet.println("external ADC: NOT OK");
+
+    return RTC_ok && internal_RTC_ok && external_ADC_ok;
 }
 
 // Telnet Shell commands
@@ -906,6 +979,14 @@ bool cmd_azi_move(char *buf){
     return true;
 }
 
+bool cmd_add_schedule(char *buf){
+    int h, m, s;
+
+    sscanf(buf, "%d%d%d", &h, &m, &s);
+    add_scheduled_task(h, m, s);
+    return true;
+}
+
 bool cmd_parse(char *buf){
     char *tok, *rest;
     const char *delim = " \n\r";
@@ -998,6 +1079,12 @@ bool cmd_parse(char *buf){
     }
     else if(strcmp(tok, "i2c-scan") == 0){
         return cmd_list_i2c_devices();
+    }
+    else if(strcmp(tok, "status") == 0){
+        return cmd_system_status();
+    }
+    else if(strcmp(tok, "scheduled-task") == 0){
+        return cmd_add_schedule(rest);
     }
     else{
         return cmd_err(tok);
@@ -1100,9 +1187,6 @@ void setup_motors(){
     ledcSetup(AZI_MOTOR_PWM_CH, MOTOR_PWM_FREQ, MOTOR_PWM_RES);
     ledcAttachPin(AZI_MOTOR_PWM, AZI_MOTOR_PWM_CH);
 
-    //analogSetWidth(11);               // 11Bit resolution
-    //analogSetAttenuation(ADC_0db);
-
     azi_encoder_zero = get_float_cfg("azie0");
     alt_encoder_zero = get_float_cfg("alte0");
 
@@ -1160,18 +1244,43 @@ void setup_ntp(void){
 }
 
 void setup_rtc(void){
-    rtc.begin();
-    if(NTP_ok){
+    if(rtc.begin()){
+        RTC_ok = true;
+    }
+    else{
+        RTC_ok = false;
+    }
+
+    if(NTP_ok && RTC_ok){
         update_time_from_NTP();
         DateTime now(timeClient.getEpochTime());
         rtc.adjust(now);
         internal_rtc.setTime(timeClient.getEpochTime());
-        RTC_ok = true;
+        internal_RTC_ok = true;
+    }
+    if(RTC_ok){
+        // TODO Copy from RTC to internal
+        internal_rtc.setTime(rtc.now().unixtime());
+        internal_RTC_ok = true;
+    }
+    if(NTP_ok && !RTC_ok){
+        internal_rtc.setTime(timeClient.getEpochTime());
+        internal_RTC_ok = true;
+    }
+}
+
+void setup_adc(void){
+    if (external_adc.begin()){
+        external_ADC_ok = true;
     }
     else{
-        // TODO Copy from RTC to internal
-        ;
+        external_ADC_ok = false;
     }
+}
+
+void setup_adc_internal(void){
+    pinMode(AZI_ENCODER, INPUT);
+    pinMode(ALT_ENCODER, INPUT);
 }
 
 void setup_i2c(void){
@@ -1191,7 +1300,6 @@ void setup() {
 
     Serial.printf("HelioGraph %012x", chip_id);
     Serial.printf("Bootnumber %d", bootn++);
-    // TODO, this is Pisa
 
     setup_pref();
     current_lon = get_float_cfg("lon");
@@ -1203,13 +1311,18 @@ void setup() {
     setup_wifi();
     if(WiFi_ok) setup_ntp();
     setup_rtc();
+    setup_adc();
 
     if(WiFi_ok) setupTelnet();
     setup_motors();
+    motor_driver_enable();
 }
 
 void loop() {
+    //if(logs_cnt < 1000) logs[logs_cnt++] = read_alt_encoder();
+
     if(WiFi_ok) telnet.loop();
+    schedule_task_loop();
 
     char outm[256];
     
