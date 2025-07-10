@@ -417,25 +417,22 @@ float alt_encoder_to_degrees(uint32_t val){
 
 float read_azi_encoder(void){
     float f_v = 0.0, val, del, first;
-    for(int i=0; i < ENCODER_OVERSAMPLING+1; i++){
-        if(i == 0)
-            analogRead(AZI_ENCODER);
+    if(!external_ADC_ok) return 0.0;
+    for(int i=0; i < ENCODER_OVERSAMPLING; i++){
+        val = azi_encoder_to_degrees((uint32_t) (external_adc.computeVolts(external_adc.readADC_SingleEnded(0))*1000.));
+        if(i==1){
+            f_v += val;
+            first = val;
+        }
         else{
-            val = azi_encoder_to_degrees(analogReadMilliVolts(AZI_ENCODER));
-            if(i==1){
-                f_v += val;
-                first = val;
+            del = first - val;
+            if(del < -300){
+                val -= 360;
             }
-            else{
-                del = first - val;
-                if(del < -300){
-                    val -= 360;
-                }
-                if(del > 300){
-                    val += 360;
-                }
-                f_v += val;
+            if(del > 300){
+                val += 360;
             }
+            f_v += val;
         }
         delay(2);
     }
@@ -448,29 +445,25 @@ float read_azi_encoder(void){
 }
 
 float read_alt_encoder(void){
-    /*  adc0 = ads.readADC_SingleEnded(0);
-        volts0 = ads.computeVolts(adc0);*/
     float f_v = 0.0, val, del, first;
-    for(int i=0; i < ENCODER_OVERSAMPLING+1; i++){
-        if(i == 0)
-            analogRead(ALT_ENCODER);
-        else{
-            val = alt_encoder_to_degrees(analogReadMilliVolts(ALT_ENCODER));
-            if(i==1){
-                f_v += val;
-                first = val;
-            }
-            else{
-                del = first - val;
-                if(del < -300){
-                    val -= 360;
-                }
-                if(del > 300){
-                    val += 360;
-                }
-                f_v += val;
-            }
+    if(!external_ADC_ok) return 0.0;
+    for(int i=0; i < ENCODER_OVERSAMPLING; i++){
+
+        val = alt_encoder_to_degrees((uint32_t) (external_adc.computeVolts(external_adc.readADC_SingleEnded(1))*1000.));
+        if(i==1){
+            f_v += val;
+            first = val;
         }
+        else{
+            del = first - val;
+            if(del < -300){
+                val -= 360;
+            }
+            if(del > 300){
+                val += 360;
+            }
+            f_v += val;
+            }
         delay(2);
     }
 
@@ -490,21 +483,21 @@ void pid_loop(void){
     char outm[250];
     if(alt_PID_enabled){
         alt_encoder_val = read_alt_encoder();
-        sprintf(outm, "ALT ENC %f SETP %f\n", alt_encoder_val, alt_setpoint);
-        telnet.print(outm);
+        //sprintf(outm, "ALT ENC %f SETP %f\n", alt_encoder_val, alt_setpoint);
+        //telnet.print(outm);
         altPID.update();
         set_alt_motor_speed((int8_t) alt_motor_speed);
     }
     if(azi_PID_enabled){
         azi_encoder_val = read_azi_encoder();
-        sprintf(outm, "AZI ENC %f SETP %f\n", azi_encoder_val, azi_setpoint);
-        telnet.print(outm);
+        //sprintf(outm, "AZI ENC %f SETP %f\n", azi_encoder_val, azi_setpoint);
+        //telnet.print(outm);
         aziPID.update();
         set_azi_motor_speed((int8_t) azi_motor_speed);
     }
     if(abs(aziPID.get_last_error()) < aziPID.get_min_error() && abs(altPID.get_last_error()) < altPID.get_min_error()){
         // We have done, stop moving
-        telnet.print("Disabled\n");
+        //telnet.print("Disabled\n");
         azi_motor_standby();
         alt_motor_standby();
         azi_PID_enabled = false;
@@ -679,7 +672,7 @@ bool run_scene(){
     ray_to_setpoints(scene[0], scene[1]);
     start_pid();
     while(alt_PID_enabled || azi_PID_enabled) pid_loop();
-    telnet.print("Initial position\n");
+    //telnet.print("Initial position\n");
 
     now = get_timestamp_RTC();
     next = now - 1;
@@ -693,8 +686,8 @@ bool run_scene(){
             next = now + SCENE_DT;
             start_pid();
             i++;
-            sprintf(outm, "STEP %d\n", i);
-            telnet.print(outm);
+            //sprintf(outm, "STEP %d\n", i);
+            //telnet.print(outm);
         }
         pid_loop();
     }
@@ -704,6 +697,45 @@ bool run_scene(){
     }
 
     motor_driver_disable();
+    return true;
+}
+
+
+bool run_pid_test(){
+    float alt = 0.0, azi=0.0;
+
+    motor_driver_enable();
+    alt_setpoint = 0.0;
+    azi_setpoint = 0.0;
+    start_pid();
+    while(alt_PID_enabled || azi_PID_enabled) pid_loop();
+
+    for(alt = 0.0; alt < 360.; alt += 10.){
+        telnet.printf("Going to ALT %f\n", alt);
+        alt_setpoint = alt;
+        start_pid();
+        while(alt_PID_enabled || azi_PID_enabled) pid_loop();
+        telnet.printf("Done\n");
+    }
+    telnet.print("Going to ALT 0.0\n");
+    alt_setpoint = 0.;
+    start_pid();
+    while(alt_PID_enabled || azi_PID_enabled) pid_loop();
+    telnet.printf("Done\n");
+
+    for(azi = 0.0; azi < 360.; azi += 10.){
+        telnet.printf("Going to ALT %f\n", azi);
+        azi_setpoint = azi;
+        start_pid();
+        while(alt_PID_enabled || azi_PID_enabled) pid_loop();
+        telnet.printf("Done\n");
+    }
+    telnet.print("Going to AZI 0.0\n");
+    azi_setpoint = 0.;
+    start_pid();
+    while(alt_PID_enabled || azi_PID_enabled) pid_loop();
+    telnet.printf("Done\n");
+
     return true;
 }
 
@@ -949,6 +981,18 @@ bool cmd_current_position(void){
 }
 
 //TODO: Remove
+
+bool cmd_test_adc_encoder(void){
+    int16_t r1 = external_adc.readADC_SingleEnded(1);
+    int16_t r0 = external_adc.readADC_SingleEnded(0);
+    float v1 = external_adc.computeVolts(r1);
+    float v0 = external_adc.computeVolts(r0);
+
+    telnet.printf("ADC0 %d %fV\n", r0, v0);
+    telnet.printf("ADC1 %d %fV\n", r1, v1);
+    return true;
+}
+
 bool cmd_test_motor2(int8_t speed){
     char buf[256];
     
@@ -1040,10 +1084,7 @@ bool cmd_manual_control(char *buf){
     manual_control_enabled = true;
     azi_PID_enabled = true;
     alt_PID_enabled = true;
-    
-    char msg[256];
-    sprintf(msg, "Moving to ALT %f AZI %f\n", alt_setpoint, azi_setpoint);
-    telnet.print(msg);
+
     return true;
 }
 
@@ -1295,6 +1336,12 @@ bool cmd_parse(char *buf){
     else if(strcmp(tok, "add-frame-scene") == 0){
         return cmd_scene_add_frame(rest);
     }
+    else if(strcmp(tok, "test-adc") == 0){
+        return cmd_test_adc_encoder();
+    }
+    else if(strcmp(tok, "test-pid") == 0){
+        return run_pid_test();
+    }
     else{
         return cmd_err(tok);
     }
@@ -1311,7 +1358,8 @@ void onTelnetConnect(String ip) {
     sprintf(buf, "%012x\n", chip_id);
   
     telnet.println("\nWelcome to heliograph\nIP: " + telnet.getIP() + "\nID: " + buf);
-    telnet.println("Use quit to disconnect");
+    telnet.println("Use quit to disconnect\n");
+    cmd_system_status();
     telnet.print("[  ] > ");
 }
 
@@ -1524,17 +1572,15 @@ void setup() {
     setup_adc();
 
     if(WiFi_ok) setupTelnet();
-    setup_motors();
-    motor_driver_enable();
+    if(external_ADC_ok) setup_motors();
 }
 
 void loop() {
     //if(logs_cnt < 1000) logs[logs_cnt++] = read_alt_encoder();
 
     if(WiFi_ok) telnet.loop();
-    schedule_task_loop();
+    //schedule_task_loop()
 
-    char outm[256];
     
     if(manual_control_enabled || solar_control_enabled){
         if(solar_control_enabled){
