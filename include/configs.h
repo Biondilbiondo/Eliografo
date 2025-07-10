@@ -33,6 +33,8 @@
 #define DEFAULT_AZI_MIN_E 0.0
 #define MIN_MOTOR_PWM 90
 
+#define MAX_SLEEP_S (2*3600)
+
 
 #ifndef USE_MPU6050
 #define USE_MPU9250

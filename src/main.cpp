@@ -830,6 +830,21 @@ bool cmd_system_status(void){
 
     return RTC_ok && internal_RTC_ok && external_ADC_ok;
 }
+void sleep_for_seconds(uint32_t tts){
+    if(tts > MAX_SLEEP_S) tts = MAX_SLEEP_S;
+    float t0 = get_timestamp_RTC();
+    motor_driver_enable();
+    alt_setpoint = 270.;
+    azi_setpoint = 0.;
+    start_pid();
+    while(alt_PID_enabled || azi_PID_enabled) pid_loop();
+    motor_driver_disable();
+    /*Go in sleep here*/
+    wifi_off();
+    uint64_t dt = (uint64_t) ((get_timestamp_RTC() - t0) * 1000000.0F);
+    esp_sleep_enable_timer_wakeup(tts * 1000000ULL - dt);
+    esp_deep_sleep_start();
+}
 
 // Telnet Shell commands
 bool cmd_id(void){
@@ -840,16 +855,9 @@ bool cmd_id(void){
 }
 
 bool cmd_sleep(char *buf){
-#define uS_TO_S_FACTOR 1000000ULL  // Conversion factor for micro seconds to seconds
     uint64_t tts;
     sscanf(buf, "%d", &tts);
-    motor_driver_enable();
-    alt_setpoint = 270.;
-    azi_setpoint = 0.;
-    start_pid();
-    while(alt_PID_enabled || azi_PID_enabled) pid_loop();
-    motor_driver_disable();
-    /*Go in sleep here*/
+    sleep_for_seconds(tts);
     return true;
 }
 
@@ -1620,8 +1628,8 @@ void setup() {
     // Serial communication
     Serial.begin(9600);
 
-    Serial.printf("HelioGraph %012x", chip_id);
-    Serial.printf("Bootnumber %d", bootn++);
+    Serial.printf("\nHelioGraph %012x\n", chip_id);
+    Serial.printf("Bootnumber %d\n", bootn++);
 
     setup_pref();
     current_lon = get_float_cfg("lon");
@@ -1643,11 +1651,20 @@ void setup() {
     motor_driver_disable();
 
     if(WiFi_ok) setup_telnet();
+
+    /*Just for testing sleep mode*/
+    delay(1000);
+    motor_driver_enable();
+    alt_setpoint = 0.;
+    azi_setpoint = 0.;
+    azi_PID_enabled = true;
+    alt_PID_enabled = true;
+
+    while(azi_PID_enabled || alt_PID_enabled) pid_loop();
+    motor_driver_disable();
 }
 
 void loop() {
-    //if(logs_cnt < 1000) logs[logs_cnt++] = read_alt_encoder();
-
     if(WiFi_ok) telnet.loop();
     schedule_task_loop();
 
