@@ -53,6 +53,7 @@ int scene_len[MAX_SCENES];
 String scenes_name[MAX_SCENES];
 
 // Control variables
+bool driver_on = false;
 float azi_setpoint, alt_setpoint,
       azi_encoder_val, alt_encoder_val,
       azi_motor_speed, alt_motor_speed,
@@ -82,11 +83,48 @@ void update_time_from_NTP(void){
     }
 }
 
+bool sync_internal_rtc(void){
+    if(!RTC_ok) return false;
+    internal_rtc.setTime(rtc.now().unixtime());
+    internal_RTC_ok = true;
+    return true;
+}
+
+bool sync_RTC_from_NTP(void){
+    if(NTP_ok && RTC_ok){
+        update_time_from_NTP();
+        DateTime now(timeClient.getEpochTime());
+        rtc.adjust(now);
+        return sync_internal_rtc();
+    }
+    return false;
+}
+
+bool sync_internal_rtc_from_NTP(void){
+    if(NTP_ok){
+        update_time_from_NTP();
+        internal_rtc.setTime(timeClient.getEpochTime());
+        internal_RTC_ok = true;
+        return true;
+    }
+    return false;
+}
+
 float get_timestamp_RTC(void){
     return (float) internal_rtc.getHour() * 3600. + (float) internal_rtc.getMinute() * 60 + internal_rtc.getSecond() + internal_rtc.getMicros() / 1e6;
 }
 
 void get_time_RTC(uint16_t *year, uint8_t *month, uint8_t *day, uint8_t *hours, uint8_t *minutes, float *seconds){
+    if(!driver_on){
+        *hours = 0;
+        *minutes = 0;
+        *seconds = 0.;
+        *day = 0;
+        *month = 0;
+        *year = 0;
+        return;
+    }
+
     DateTime now = rtc.now();
     *hours = now.hour();
     *minutes = now.minute();
@@ -142,16 +180,16 @@ void get_time_NTP(uint16_t *year, uint8_t *month, uint8_t *day, uint8_t *hours, 
 }
 
 void get_time(uint16_t *year, uint8_t *month, uint8_t *day, uint8_t *hours, uint8_t *minutes, float *seconds){
-    if(RTC_ok){
+    if(RTC_ok && driver_on){
         get_time_RTC(year, month, day, hours, minutes, seconds);
-        return;
-    }
-    if(NTP_ok){
-        get_time_NTP(year, month, day, hours, minutes, seconds);
         return;
     }
     if(internal_RTC_ok){
         get_time_internal_RTC(year, month, day, hours, minutes, seconds);
+        return;
+    }
+    if(NTP_ok){
+        get_time_NTP(year, month, day, hours, minutes, seconds);
         return;
     }
 
@@ -189,8 +227,9 @@ void schedule_task_loop(void){
         }
 
         if(abs(timestamp - (float) sch_timestamp[i]) < SCH_TIME_DEL){
-            telnet.print("Running daily task\n");
-            telnet.printf("%02d at %02d:%02d:%02d\n", i, hours, minutes, (int) seconds);
+            /*telnet.print("Running daily task\n");
+            telnet.printf("%02d at %02d:%02d:%02d\n", i, hours, minutes, (int) seconds);*/
+            wifi_on();
             sch_run[i] = true;
         }   
     }
@@ -308,11 +347,13 @@ void update_sun_vec(void){
 
 // Motors and Encoders Routine
 void motor_driver_enable(void){
+    driver_on = true;
     digitalWrite(DRIVER_ENABLE, LOW);
     delay(100);
 }
 
 void motor_driver_disable(void){
+    driver_on = false;
     digitalWrite(DRIVER_ENABLE, HIGH);
 }
 
@@ -407,6 +448,18 @@ void alt_motor_enable(void){
     alt_PID_enabled = true;
 }
 
+void check_external_ADC(void){
+    byte error, address;
+    Wire.beginTransmission(0x48);
+    error = Wire.endTransmission();
+    if (error == 0) {
+        external_ADC_ok = true;
+    }
+    else{
+        external_ADC_ok = false;
+    }
+}
+
 float azi_encoder_to_degrees(uint32_t val){
     return (float) map(val, 0, 2500, 0, 360);
 }
@@ -480,7 +533,6 @@ void start_pid(void){
 }
 
 void pid_loop(void){
-    char outm[250];
     if(alt_PID_enabled){
         alt_encoder_val = read_alt_encoder();
         //sprintf(outm, "ALT ENC %f SETP %f\n", alt_encoder_val, alt_setpoint);
@@ -700,6 +752,25 @@ bool run_scene(){
     return true;
 }
 
+bool wifi_off(void){
+    if(!WiFi_ok) return false;
+    if(telnet.isConnected()) telnet.disconnectClient();
+    delay(100);
+    telnet.stop();
+    WiFi.disconnect();
+    WiFi.mode(WIFI_OFF);
+    WiFi_ok = false;
+    NTP_ok = false;
+    return true;
+}
+
+bool wifi_on(void){
+    if(WiFi_ok) return false;
+    setup_wifi();
+    if(WiFi_ok) setup_ntp();
+    if(WiFi_ok) setup_telnet();
+    return true;
+}
 
 bool run_pid_test(){
     float alt = 0.0, azi=0.0;
@@ -1342,6 +1413,12 @@ bool cmd_parse(char *buf){
     else if(strcmp(tok, "test-pid") == 0){
         return run_pid_test();
     }
+    else if(strcmp(tok, "sync-rtc-ntp") == 0){
+        return sync_RTC_from_NTP();
+    }
+    else if(strcmp(tok, "wifi-off") == 0){
+        return wifi_off();
+    }
     else{
         return cmd_err(tok);
     }
@@ -1395,7 +1472,7 @@ void onTelnetInput(String str) {
     }
 }
 
-void setupTelnet() {  
+void setup_telnet() {  
   // passing on functions for various telnet events
   telnet.onConnect(onTelnetConnect);
   telnet.onConnectionAttempt(onTelnetConnectionAttempt);
@@ -1508,21 +1585,9 @@ void setup_rtc(void){
         RTC_ok = false;
     }
 
-    if(NTP_ok && RTC_ok){
-        update_time_from_NTP();
-        DateTime now(timeClient.getEpochTime());
-        rtc.adjust(now);
-        internal_rtc.setTime(timeClient.getEpochTime());
-        internal_RTC_ok = true;
-    }
     if(RTC_ok){
         // TODO Copy from RTC to internal
-        internal_rtc.setTime(rtc.now().unixtime());
-        internal_RTC_ok = true;
-    }
-    if(NTP_ok && !RTC_ok){
-        internal_rtc.setTime(timeClient.getEpochTime());
-        internal_RTC_ok = true;
+        sync_internal_rtc();
     }
 }
 
@@ -1568,18 +1633,29 @@ void setup() {
 
     setup_wifi();
     if(WiFi_ok) setup_ntp();
-    setup_rtc();
     setup_adc();
-
-    if(WiFi_ok) setupTelnet();
     if(external_ADC_ok) setup_motors();
+    motor_driver_enable();
+    setup_rtc();
+    if(WiFi_ok && NTP_ok && RTC_ok) sync_RTC_from_NTP();
+    if(RTC_ok) sync_internal_rtc();
+    if(!RTC_ok && NTP_ok) sync_internal_rtc_from_NTP();
+    motor_driver_disable();
+
+    if(WiFi_ok) setup_telnet();
 }
 
 void loop() {
     //if(logs_cnt < 1000) logs[logs_cnt++] = read_alt_encoder();
 
     if(WiFi_ok) telnet.loop();
-    //schedule_task_loop()
+    schedule_task_loop();
+
+    check_external_ADC();
+    if(!external_ADC_ok){
+        motor_driver_disable();
+        return;
+    }
 
     
     if(manual_control_enabled || solar_control_enabled){

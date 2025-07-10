@@ -51,9 +51,13 @@
 
 
 void setup_wifi();
+void setup_telnet();
 
 void setup_ntp(void);
 void setup_rtc(void);
+
+bool wifi_on(void);
+bool wifi_off(void);
 
 void MPU_update_rot_frame(float **rf);
 
