@@ -42,6 +42,16 @@ uint64_t sch_timestamp[MAX_DAILY_TASKS];
 bool sch_run[MAX_DAILY_TASKS] = {false};
 uint32_t task_cnt = 0;
 
+// Scene variables
+#define SCENE_LEN 120
+#define SCENE_DT .25
+#define MAX_SCENES 16
+
+uint8_t scene_cnt;
+float scenes[MAX_SCENES][SCENE_LEN*2] = {{0}};
+int scene_len[MAX_SCENES];
+String scenes_name[MAX_SCENES];
+
 // Control variables
 float azi_setpoint, alt_setpoint,
       azi_encoder_val, alt_encoder_val,
@@ -511,14 +521,111 @@ void ray_to_setpoints(float alt, float azi){
     if(azi_setpoint < 0) azi_setpoint += 360.0;
 }
 
-bool read_scene_from_file(char *path, float *scene_data, int seq_len){
+// littleFS routine
+String *list_dir(const char *dirname){
+    Serial.printf("Listing directory: %s\r\n", dirname);
+
+    File root = LittleFS.open(dirname);
+    if(!root){
+        Serial.println("- failed to open directory");
+        return NULL;
+    }
+    if(!root.isDirectory()){
+        Serial.println(" - not a directory");
+        return NULL;
+    }
+
+    File file = root.openNextFile();
+    uint32_t nfiles = 0;
+    while(file){
+        nfiles ++;
+        file = root.openNextFile();
+    }
+    
+    root.rewindDirectory();
+    String *fnames = new String[nfiles+1];
+    for(int i=0; i < nfiles; i++){
+        file = root.openNextFile();
+        fnames[i] = file.name();
+    }
+    fnames[nfiles] = "<<END>>";
+    root.close();
+
+    return fnames;
+}
+
+bool write_scene_on_file(int s){
+    Serial.printf("Writing file: %s\r\n", "/scenes/"+scenes_name[s]);
+
+    File file = LittleFS.open("/scenes/"+scenes_name[s], FILE_WRITE);
+    if(!file){
+        Serial.println("- failed to open file for writing");
+        return false;
+    }
+    for(int i=0; i < scene_len[s]; i++){
+        file.printf("%05.1f %05.1f\n", scenes[s][i*2], scenes[s][i*2+1]);
+    }
+    file.close();
+    return true;
+}
+
+int create_new_empty_scene(const char *name){
+    if(scene_cnt >= MAX_SCENES) return -1;
+    for(int i=0; i < scene_cnt; i++){
+        if(scenes_name[i] == name) return -1;
+    }
+    scenes_name[scene_cnt] = name;
+    for(int i=0; i < SCENE_LEN*2; i++)
+        scenes[scene_cnt][i] = 0.;
+    scene_len[scene_cnt] = 0;
+    write_scene_on_file(scene_cnt);
+    scene_cnt++;
+    return scene_cnt-1;
+}
+
+bool remove_file(String name){
+    Serial.printf("Deleting file: %s\r\n", name.c_str());
+    if(LittleFS.remove(name.c_str())){
+        Serial.println("- file deleted");
+        return true;
+    } else {
+        Serial.println("- delete failed");
+        return false;
+    }
+}
+
+bool remove_scene(int s){
+    String fname;
+    if(s >= scene_cnt || scene_cnt < 0){
+        return false;
+    }
+    if(s == scene_cnt-1){
+        scene_len[s] = 0;
+        fname = scenes_name[s];
+    }
+    else{
+        fname = scenes_name[s];
+        for(int i=s+1; i<scene_cnt; i++){
+            scene_len[i-1] = scene_len[i];
+            scenes_name[i-1] = scenes_name[i];
+            for(int j=0; j<scene_len[i]*2; j++){
+                scenes[i-1][j] = scenes[i][j];
+            }
+        }
+    }
+    if(!remove_file("/scenes/"+fname)) return false;
+    scene_cnt--;
+    return true;
+}
+
+int load_scene_from_file(const char *path, float *scene_data, int seq_len){
     String s;
     Serial.printf("Reading file: %s\r\n", path);
 
     File file = LittleFS.open(path);
     if(!file || file.isDirectory()){
         Serial.println("- failed to open file for reading");
-        return false;
+        return -1;
     }
 
     Serial.println("- read from file:");
@@ -529,18 +636,39 @@ bool read_scene_from_file(char *path, float *scene_data, int seq_len){
         i++;
     }
     file.close();
+    return i;
+}
+
+bool load_scenes_from_file(void){
+    // Load all the scenes from folder /scene
+    String *fnames = list_dir("/scenes");
+    for(scene_cnt=0; scene_cnt < MAX_SCENES; scene_cnt++){
+        if(fnames[scene_cnt] == "<<END>>") break;
+        scenes_name[scene_cnt] = fnames[scene_cnt];
+        String path = "/scenes/"+fnames[scene_cnt];
+        int l = load_scene_from_file(path.c_str(), &(scenes[scene_cnt][0]), SCENE_LEN);
+        scene_len[scene_cnt] = l;
+    }
     return true;
 }
 
-#define SCENE_LEN 40
-#define SCENE_DT .25
+bool scene_add_frame(int s, float alt, float azi){
+    // Load all the scenes from folder /scene
+    if(s >= scene_cnt || scene_cnt < 0)  return false;
+    if(scene_len[s] >= SCENE_LEN) return false;
+    scenes[s][scene_len[s]*2] = alt;
+    scenes[s][scene_len[s]*2+1] = azi;
+    scene_len[s]++;
+    return write_scene_on_file(s);
+}
+
 bool run_scene(){
     float now, next;
     float scene[SCENE_LEN*2];
     char outm[250];
     char path[] = "/1.txt";
 
-    if(!read_scene_from_file(path, scene, SCENE_LEN)){
+    if(!load_scene_from_file(path, scene, SCENE_LEN)){
         return false;
     }
     for(int i=0; i < SCENE_LEN; i++){
@@ -987,6 +1115,69 @@ bool cmd_add_schedule(char *buf){
     return true;
 }
 
+bool cmd_ls(char *buf){
+    String *fnames = list_dir(buf);
+    if(fnames == NULL){
+        telnet.printf("Cannot list %s\n", buf);
+        return false;
+    }
+    else{
+        int i = 0;
+        while(fnames[i] != "<<END>>")
+            telnet.println(fnames[i++]);
+    }
+
+    delete[] fnames;
+    return true;
+}
+
+bool cmd_list_scenes(void){
+    for(int i=0; i < scene_cnt; i++){
+        telnet.printf("(%02d) %20s %03d f %.2f s\n", i, 
+                      scenes_name[i], scene_len[i], 1.0 * scene_len[i] * SCENE_DT);
+    }
+    return true;
+}
+
+bool cmd_new_scene(char *rest){
+    int ns = create_new_empty_scene(rest);
+    if(ns < 0){
+        telnet.printf("Error in creating scene.\n");
+        return false;
+    }
+    telnet.printf("Created new scene %d\n", ns);
+    return true;
+}
+
+bool cmd_remove_scene(char *rest){
+    int ns;
+    sscanf(rest, "%d", &ns);
+    if(!remove_scene(ns)){
+        telnet.printf("Error in removing scene.\n");
+        return false;
+    }
+    telnet.printf("Removed scene %d\n", ns);
+    return true;
+}
+
+bool cmd_scene_add_frame(char *rest){
+    int ns;
+    float alt, azi;
+    sscanf(rest, "%d%f%f", &ns, &alt, &azi);
+    return  scene_add_frame(ns, alt, azi);
+}
+
+bool cmd_print_scene(char *rest){
+    int ns;
+    sscanf(rest, "%d", &ns);
+    if(ns < 0 || ns >= scene_cnt) return false;
+    telnet.printf("%s\n", scenes_name[ns].c_str());
+    for(int i=0; i < scene_len[ns]; i++){
+        telnet.printf("(%03d - %06.2f s) %05.1f %05.1f\n", i, 1.0*i*SCENE_DT, scenes[ns][i*2], scenes[ns][i*2+1]);
+    }
+    return  true;
+}
+
 bool cmd_parse(char *buf){
     char *tok, *rest;
     const char *delim = " \n\r";
@@ -1085,6 +1276,24 @@ bool cmd_parse(char *buf){
     }
     else if(strcmp(tok, "scheduled-task") == 0){
         return cmd_add_schedule(rest);
+    }
+    else if(strcmp(tok, "ls") == 0){
+        return cmd_ls(rest);
+    }
+    else if(strcmp(tok, "list-scene") == 0){
+        return cmd_list_scenes();
+    }
+    else if(strcmp(tok, "new-scene") == 0){
+        return cmd_new_scene(rest);
+    }
+    else if(strcmp(tok, "remove-scene") == 0){
+        return cmd_remove_scene(rest);
+    }
+    else if(strcmp(tok, "print-scene") == 0){
+        return cmd_print_scene(rest);
+    }
+    else if(strcmp(tok, "add-frame-scene") == 0){
+        return cmd_scene_add_frame(rest);
     }
     else{
         return cmd_err(tok);
@@ -1305,6 +1514,7 @@ void setup() {
     current_lon = get_float_cfg("lon");
     current_lat = get_float_cfg("lat");
     setup_littlefs();
+    load_scenes_from_file();
 
     setup_i2c();
 
