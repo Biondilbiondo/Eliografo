@@ -44,7 +44,8 @@ uint32_t task_cnt = 0;
 
 // Scene variables
 #define SCENE_LEN 120
-#define SCENE_DT .25
+//in us
+#define SCENE_DT 500
 #define MAX_SCENES 16
 
 uint8_t scene_cnt;
@@ -61,6 +62,7 @@ float azi_setpoint, alt_setpoint,
 float pid_watchdog_t0, pid_watchdog_elap;
 float azi_motor_min_s, azi_motor_max_sv, azi_motor_min_sv, azi_motor_m_s;
 float alt_motor_min_s, alt_motor_max_sv, alt_motor_min_sv, alt_motor_m_s;
+uint8_t encoder_oversampling = ENCODER_OVERSAMPLING;
 
 float current_lat, current_lon;
 
@@ -290,6 +292,8 @@ float get_float_default_cfg(const char *k){
     if(strcmp(k, "alt_sm") == 0)
         return DEFAULT_M_SPEED;
 
+    if(strcmp(k, "overs") == 0)
+        return ENCODER_OVERSAMPLING;
     return 0.0;
 }
 
@@ -485,20 +489,16 @@ void check_external_ADC(void){
     }
 }
 
-float azi_encoder_to_degrees(uint32_t val){
-    return (float) map(val, 0, 2500, 0, 360);
-}
-
-float alt_encoder_to_degrees(uint32_t val){
-    return (float) map(val, 0, 2500, 0, 360);
+float azi_encoder_to_degrees(float val){
+    return val/2.50*360.0;
 }
 
 float read_azi_encoder(void){
     float f_v = 0.0, val, del, first;
     if(!external_ADC_ok) return 0.0;
     for(int i=0; i < ENCODER_OVERSAMPLING; i++){
-        val = azi_encoder_to_degrees((uint32_t) (external_adc.computeVolts(external_adc.readADC_SingleEnded(0))*1000.));
-        if(i==1){
+        val = azi_encoder_to_degrees(external_adc.computeVolts(external_adc.readADC_SingleEnded(0)));
+        if(i==0){
             f_v += val;
             first = val;
         }
@@ -512,7 +512,7 @@ float read_azi_encoder(void){
             }
             f_v += val;
         }
-        delay(2);
+        delay(1);
     }
 
     f_v /= ENCODER_OVERSAMPLING;
@@ -522,13 +522,16 @@ float read_azi_encoder(void){
     return deg; // Just to put something here
 }
 
+float alt_encoder_to_degrees(float val){
+    return val/2.50 * 360.0;
+}
+
 float read_alt_encoder(void){
     float f_v = 0.0, val, del, first;
-    if(!external_ADC_ok) return 0.0;
-    for(int i=0; i < ENCODER_OVERSAMPLING; i++){
-
-        val = alt_encoder_to_degrees((uint32_t) (external_adc.computeVolts(external_adc.readADC_SingleEnded(1))*1000.));
-        if(i==1){
+    //if(!external_ADC_ok) return 0.0;
+    for(int i=0; i < encoder_oversampling; i++){
+        val = alt_encoder_to_degrees(external_adc.computeVolts(external_adc.readADC_SingleEnded(1)));
+        if(i==0){
             f_v += val;
             first = val;
         }
@@ -542,10 +545,10 @@ float read_alt_encoder(void){
             }
             f_v += val;
             }
-        delay(2);
+        if(i != encoder_oversampling-1) delay(1);
     }
 
-    f_v /= ENCODER_OVERSAMPLING;
+    f_v /= encoder_oversampling;
     float deg = f_v - alt_encoder_zero;
     if(deg < 0) deg+=360;
     if(deg > 360) deg -= 360;
@@ -567,24 +570,47 @@ void reset_pid_watchdog(void){
     pid_watchdog_elap = -1;
 }
 
+#define GAIN 3.5
+int8_t compute_speed(float dangle, float dt, float min=-127, float max=127){
+    float speed;
+
+    if(dangle > 0)
+        speed = (60+1e3 * dangle / dt * GAIN);
+    else
+        speed = (-60+1e3 * dangle / dt * GAIN);
+
+    if(speed > max) speed = max;
+    if(speed < min) speed = min;
+    return (int8_t) speed;
+}
+
+float compute_angle_delta(float a1, float a2){
+    float delta;
+    delta = a1 - a2;
+    if(delta > 180.) delta -= 360;
+    else if(delta < -180) delta += 360;
+    //if(abs(delta) < .5) delta = 0.;
+    return delta;
+}
+
 void pid_loop(void){
     if(alt_PID_enabled){
         alt_encoder_val = read_alt_encoder();
-        //sprintf(outm, "ALT ENC %f SETP %f\n", alt_encoder_val, alt_setpoint);
-        //telnet.print(outm);
+        telnet.printf("ALT ENC %f SETP %f\n", alt_encoder_val, alt_setpoint);
         altPID.update();
+        telnet.printf("ALT motor speed %d\n", (int8_t) alt_motor_speed);
         set_alt_motor_speed((int8_t) alt_motor_speed);
     }
     if(azi_PID_enabled){
         azi_encoder_val = read_azi_encoder();
-        //sprintf(outm, "AZI ENC %f SETP %f\n", azi_encoder_val, azi_setpoint);
-        //telnet.print(outm);
+        telnet.printf("AZI ENC %f SETP %f\n", azi_encoder_val, azi_setpoint);
         aziPID.update();
+        telnet.printf("AZI motor speed %d\n", (int8_t) azi_motor_speed);
         set_azi_motor_speed((int8_t) azi_motor_speed);
     }
     if(abs(aziPID.get_last_error()) < aziPID.get_min_error() && abs(altPID.get_last_error()) < altPID.get_min_error()){
         // We have done, stop moving
-        //telnet.print("Disabled\n");
+        telnet.print("Disabled\n");
         azi_motor_standby();
         alt_motor_standby();
         azi_PID_enabled = false;
@@ -604,8 +630,8 @@ void pid_loop(void){
 
 bool calibrate_speed(void){
 #define TIME_CAL 2
-#define FAST_INCREMENT 10
-#define SLOW_INCREMENT 2
+#define FAST_INCREMENT 5
+#define SLOW_INCREMENT 1
     int16_t speed;
     float a0, a1, t0, t1, sfwd, srev, smean, estimated_m;
     int16_t minspeed = -1, mcnt;
@@ -706,11 +732,14 @@ bool calibrate_speed(void){
         //telnet.printf("%+03d %.2f\n", -speed, srev);
         smean = (sfwd - srev) / 2;
 
-        if(smean > MIN_ALLOWED_SPEED && minspeed < 0){
-            minspeed = speed;
-            minspeed_val = smean;
+        if(smean > MIN_ALLOWED_SPEED && minspeed < 0 && increment == FAST_INCREMENT){
+            speed -= FAST_INCREMENT;
             increment = SLOW_INCREMENT;
             //break;
+        }
+        if(minspeed < 0 && increment == SLOW_INCREMENT){
+            minspeed = speed;
+            minspeed_val = smean;
         }
         if(minspeed > 0 && speed > 122){
             maxspeed_val += smean;
@@ -758,11 +787,14 @@ bool calibrate_speed(void){
         //telnet.printf("%+03d %.2f\n", -speed, srev);
         smean = (sfwd - srev) / 2;
 
-        if(smean > MIN_ALLOWED_SPEED && minspeed < 0){
-            minspeed = speed;
-            minspeed_val = smean;
+        if(smean > MIN_ALLOWED_SPEED && minspeed < 0 && increment == FAST_INCREMENT){
+            speed -= FAST_INCREMENT;
             increment = SLOW_INCREMENT;
             //break;
+        }
+        if(minspeed < 0 && increment == SLOW_INCREMENT){
+            minspeed = speed;
+            minspeed_val = smean;
         }
         if(minspeed > 0 && speed > 122){
             maxspeed_val += smean;
@@ -933,47 +965,97 @@ bool scene_add_frame(int s, float alt, float azi){
     return write_scene_on_file(s);
 }
 
-bool run_scene(){
-    float now, next;
-    float scene[SCENE_LEN*2];
-    char outm[250];
-    char path[] = "/1.txt";
+bool run_scene(uint8_t sn, float alt_0, float azi_0){
+    //TODO watchdog 
+    //TODO syncmove
+    uint32_t now, next, t0, scene_beg;
+    int32_t dt;
 
-    if(!load_scene_from_file(path, scene, SCENE_LEN)){
-        return false;
-    }
-    for(int i=0; i < SCENE_LEN; i++){
-        sprintf(outm, "%f %f\n", scene[i*2], scene[i*2+1]);
-        telnet.print(outm);
-    }
+    int8_t alt_target_speed, alt_max_speed, alt_min_speed;
+    int8_t azi_target_speed, azi_max_speed, azi_min_speed;
+
+    float speed_range = 0.2;
+    
+    float delta_alt, delta_azi;
+    int8_t alt_speed_i, azi_speed_i;
+
     motor_driver_enable();
-    ray_to_setpoints(scene[0], scene[1]);
+    //ray_to_setpoints(scenes[sn][0]+alt_0, scenes[sn][1]+azi_0);
+    alt_setpoint = scenes[sn][0]+alt_0;
+    azi_setpoint = scenes[sn][1]+azi_0;
     start_pid();
     while(alt_PID_enabled || azi_PID_enabled) pid_loop();
     //telnet.print("Initial position\n");
 
-    now = get_timestamp_RTC();
-    next = now - 1;
+    now = millis();
+    scene_beg = now;
     
     int i = 0;
-    next = now - 1;
-    while(i < SCENE_LEN){
-        now = get_timestamp_RTC();
-        if(now >= next){
-            ray_to_setpoints(scene[i*2], scene[i*2+1]);
-            next = now + SCENE_DT;
-            start_pid();
-            i++;
-            //sprintf(outm, "STEP %d\n", i);
-            //telnet.print(outm);
+    next = now;
+
+    while(i < scene_len[sn]){
+        t0 = millis();
+        alt_encoder_val = read_alt_encoder();
+        azi_encoder_val = read_azi_encoder();
+        
+        delta_alt = compute_angle_delta(alt_setpoint, alt_encoder_val);
+        delta_azi = compute_angle_delta(azi_setpoint, azi_encoder_val);
+
+        now = millis();
+        dt = next-now;
+        if(dt > 100){
+            
+            alt_speed_i = compute_speed(delta_alt, dt, alt_min_speed, alt_max_speed);
+            azi_speed_i = compute_speed(delta_azi, dt, azi_min_speed, azi_max_speed);
+            //telnet.printf("dt = %d\n", dt);
+            //telnet.printf("alt %f azi %f \n", delta_alt, delta_azi);
+            telnet.printf("speeds %d %d\n",alt_speed_i, azi_speed_i);
+
+            set_alt_motor_speed(alt_speed_i);
+            set_azi_motor_speed(azi_speed_i);
+            // Delay in such a way that it last at least 150ms
+            delay(150 - millis() + t0);
         }
-        pid_loop();
+
+        if(now >= next){
+            telnet.printf("END DALT %f DAZI %f\n", delta_alt, delta_azi);
+
+            alt_setpoint = scenes[sn][i*2]+alt_0;
+            azi_setpoint = scenes[sn][i*2+1]+azi_0;
+
+            alt_target_speed = compute_speed(compute_angle_delta(alt_setpoint, alt_encoder_val), SCENE_DT);
+            alt_max_speed = compute_speed(compute_angle_delta(alt_setpoint, alt_encoder_val)*(1.+speed_range), SCENE_DT);
+            alt_min_speed = compute_speed(compute_angle_delta(alt_setpoint, alt_encoder_val)*(1.-speed_range), SCENE_DT);
+
+            azi_target_speed = compute_speed(compute_angle_delta(azi_setpoint, azi_encoder_val), SCENE_DT);
+            azi_max_speed = compute_speed(compute_angle_delta(azi_setpoint, azi_encoder_val)*(1.+speed_range), SCENE_DT);
+            azi_min_speed = compute_speed(compute_angle_delta(azi_setpoint, azi_encoder_val)*(1.-speed_range), SCENE_DT);
+
+            telnet.printf("ALT %d %d %d\n", alt_min_speed, alt_target_speed, alt_max_speed);
+            telnet.printf("AZI %d %d %d\n", azi_min_speed, azi_target_speed, azi_max_speed);
+            
+            set_alt_motor_speed(alt_target_speed);
+            set_azi_motor_speed(azi_target_speed);
+
+            now = millis();
+            next = scene_beg + SCENE_DT * (i+1);
+            //start_pid();
+            i++;
+            telnet.printf("STEP %d\n", i);
+        }
+        //pid_loop();
     }
-    while(now < next){
+    /*while(now < next){
         now = get_timestamp_RTC();
         pid_loop();
     }
 
+    altPID.set_max_speed(127);
+    aziPID.set_max_speed(127);*/
+    telnet.printf("Scene ended after %f\n", 1e-3*(millis()-scene_beg));
+
+    azi_motor_standby();
+    alt_motor_standby();
     motor_driver_disable();
     return true;
 }
@@ -1288,13 +1370,31 @@ bool cmd_current_position(void){
 //TODO: Remove
 
 bool cmd_test_adc_encoder(void){
+    uint32_t t0, t1, tread, tconv;
     int16_t r1 = external_adc.readADC_SingleEnded(1);
     int16_t r0 = external_adc.readADC_SingleEnded(0);
     float v1 = external_adc.computeVolts(r1);
     float v0 = external_adc.computeVolts(r0);
+    float a1, a0;
+
+    t0 = micros();
+    r1 = external_adc.readADC_SingleEnded(1);
+    t1 = micros();
+    tread = t1-t0;
+    
+    t0 = micros();
+    v1 = external_adc.computeVolts(r1);
+    t1 = micros();
+    tconv = t1-t0;
+
+    t0 = micros();
+    a1 = read_alt_encoder();
+    t1 = micros();
 
     telnet.printf("ADC0 %d %fV\n", r0, v0);
     telnet.printf("ADC1 %d %fV\n", r1, v1);
+    telnet.printf("Tread = %d us Tconv = %d us\n", tread, tconv);
+    telnet.printf("Tfull_read = %d  us\n", t1-t0);
     return true;
 }
 
@@ -1648,7 +1748,7 @@ bool cmd_parse(char *buf){
         return cmd_driver_off();
     }
     else if(strcmp(tok, "test-scene") == 0){
-        return run_scene();
+        return run_scene(0, 0., 0.);
     }
     else if(strcmp(tok, "sleep") == 0){
         return cmd_sleep(rest);
@@ -1811,6 +1911,8 @@ void setup_motors(){
     alt_motor_min_sv = get_float_cfg("alt_msv");
     alt_motor_m_s = get_float_cfg("alt_sm");
 
+    encoder_oversampling = (uint8_t) get_float_cfg("overs");
+
     azi_encoder_val = read_azi_encoder();
     alt_encoder_val = read_alt_encoder();
     azi_setpoint = azi_encoder_val;
@@ -1886,6 +1988,10 @@ void setup_adc(void){
     }
     else{
         external_ADC_ok = false;
+    }
+    if(external_ADC_ok){
+        external_adc.setDataRate(RATE_ADS1115_860SPS);
+        external_adc.setGain(GAIN_ONE);
     }
 }
 
