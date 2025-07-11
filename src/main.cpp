@@ -58,6 +58,10 @@ float azi_setpoint, alt_setpoint,
       azi_encoder_val, alt_encoder_val,
       azi_motor_speed, alt_motor_speed,
       alt_encoder_zero, azi_encoder_zero;
+float pid_watchdog_t0, pid_watchdog_elap;
+float azi_motor_min_s, azi_motor_max_sv, azi_motor_min_sv, azi_motor_m_s;
+float alt_motor_min_s, alt_motor_max_sv, alt_motor_min_sv, alt_motor_m_s;
+
 float current_lat, current_lon;
 
 ringPID aziPID(&azi_encoder_val, &azi_motor_speed, &azi_setpoint);
@@ -553,6 +557,16 @@ void start_pid(void){
     azi_PID_enabled = true;
 }
 
+void set_pid_watchdog(uint32_t watchdog_time_s){
+    pid_watchdog_t0 = get_timestamp_RTC();
+    pid_watchdog_elap = watchdog_time_s;
+}
+
+void reset_pid_watchdog(void){
+    pid_watchdog_t0 = -1;
+    pid_watchdog_elap = -1;
+}
+
 void pid_loop(void){
     if(alt_PID_enabled){
         alt_encoder_val = read_alt_encoder();
@@ -575,6 +589,16 @@ void pid_loop(void){
         alt_motor_standby();
         azi_PID_enabled = false;
         alt_PID_enabled = false;
+    }
+    if(pid_watchdog_t0 > 0 && pid_watchdog_elap > 0){
+        float dt = get_timestamp_RTC() - pid_watchdog_t0;
+        if(dt > pid_watchdog_elap || dt < 0){
+            azi_motor_standby();
+            alt_motor_standby();
+            azi_PID_enabled = false;
+            alt_PID_enabled = false;
+            telnet.print("Killed by watchdog!\n");
+        }
     }
 }
 
@@ -748,7 +772,7 @@ bool calibrate_speed(void){
     
     maxspeed_val /= mcnt;
     estimated_m = (maxspeed_val-minspeed_val) / (127-minspeed);
-    telnet.printf("Azi Min speed: %d %.2f\nAlt Max speed %d %.2f\nAlt Estimated m: %f\n", minspeed, minspeed_val, 127, maxspeed_val, estimated_m);
+    telnet.printf("Azi Min speed: %d %.2f\nAzi Max speed %d %.2f\nAzi Estimated m: %f\n", minspeed, minspeed_val, 127, maxspeed_val, estimated_m);
     
     HGPrefs.putFloat("azi_ms", minspeed);
     HGPrefs.putFloat("azi_msv", minspeed_val);
@@ -1356,12 +1380,51 @@ bool cmd_control_reset(void){
 }
 
 bool cmd_manual_control(char *buf){
-    float alt, azi;
+    float azi, alt;
 
     sscanf(buf, "%f%f", &alt, &azi);
     cmd_control_reset();
     alt_setpoint = alt;
     azi_setpoint = azi;
+
+    float delta_alt, delta_azi;
+    float c_alt, c_azi;
+    float est_t_alt, est_t_azi, maxt;
+    c_alt = read_alt_encoder();
+    c_azi = read_azi_encoder();
+    delta_alt = abs(c_alt-alt);
+    if(delta_alt > 180.) delta_alt -= 360;
+    delta_azi = abs(c_azi-azi);
+    if(delta_azi > 180.) delta_azi -= 360;
+    est_t_alt = delta_alt/alt_motor_max_sv;
+    est_t_azi = delta_azi/azi_motor_max_sv;
+    if(est_t_alt > est_t_azi)
+        maxt = est_t_alt;
+    else
+        maxt = est_t_azi;
+    if(maxt < 1.) maxt = 1.;
+    set_pid_watchdog(WATCHDOG_TIME_FACTOR*maxt);
+
+    /*
+    SKETCH FOR SYNC MOVE
+    float alts, azs, calt, cazi, exp_alt_t, exp_azi_t, tmov;
+    calt = read_alt_encoder();
+    cazi = read_azi_encoder();
+    exp_alt_t = abs(calt - alt) / get_float_cfg("alt_Msv");
+    exp_azi_t = abs(cazi - azi) / get_float_cfg("azi_Msv");
+    telnet.printf("ALT A %f T %f\nAZI A %f T %f\n", abs(calt - alt), exp_alt_t, abs(cazi - azi), exp_azi_t);
+    if(exp_azi_t > exp_alt_t) 
+        tmov = exp_azi_t;
+    else
+        tmov = exp_alt_t;
+    tmov *= 1.2;
+    alts = get_float_cfg("alt_ms") + abs(calt - alt)/(tmov * get_float_cfg("alt_sm") );
+    azis = get_float_cfg("azi_ms") + abs(cazi - azi)/(tmov * get_float_cfg("azi_sm") );
+    if(azis > 127) azis = 127;
+    if(alts > 127) alts = 127;
+    altPID.set_max_speed(alts);
+    aziPID.set_max_speed(azis);
+    telnet.printf("Time to move %f, azi speed %f alt speed %f\n", tmov, azis, alts );*/
     manual_control_enabled = true;
     azi_PID_enabled = true;
     alt_PID_enabled = true;
@@ -1738,6 +1801,16 @@ void setup_motors(){
     azi_encoder_zero = get_float_cfg("azie0");
     alt_encoder_zero = get_float_cfg("alte0");
 
+    azi_motor_min_s = get_float_cfg("azi_ms");
+    azi_motor_max_sv = get_float_cfg("azi_Msv");
+    azi_motor_min_sv = get_float_cfg("azi_msv");
+    azi_motor_m_s = get_float_cfg("azi_sm");
+
+    alt_motor_min_s = get_float_cfg("alt_ms");
+    alt_motor_max_sv = get_float_cfg("alt_Msv");
+    alt_motor_min_sv = get_float_cfg("alt_msv");
+    alt_motor_m_s = get_float_cfg("alt_sm");
+
     azi_encoder_val = read_azi_encoder();
     alt_encoder_val = read_alt_encoder();
     azi_setpoint = azi_encoder_val;
@@ -1859,6 +1932,7 @@ void setup() {
     motor_driver_disable();
 
     if(WiFi_ok) setup_telnet();
+    reset_pid_watchdog();
 
     /*Just for testing sleep mode*/
     /*delay(1000);

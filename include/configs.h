@@ -14,11 +14,11 @@
 //#define USE_MPU6050
 #define USE_GY271
 
-#define DEFAULT_AZI_KP 10.
+#define DEFAULT_AZI_KP 40.
 #define DEFAULT_AZI_KD 0.
 #define DEFAULT_AZI_KI 0.
 
-#define DEFAULT_ALT_KP 10.
+#define DEFAULT_ALT_KP 40.
 #define DEFAULT_ALT_KD 0.
 #define DEFAULT_ALT_KI 0.
 
@@ -33,6 +33,7 @@
 #define DEFAULT_AZI_MIN_E 0.0
 // in deg/sec 
 #define MIN_ALLOWED_SPEED 1.0
+#define WATCHDOG_TIME_FACTOR 3.
 #define DEFAULT_MIN_SPEED 80
 #define DEFAULT_MIN_SPEED_VALUE 1.0
 #define DEFAULT_MAX_SPEED_VALUE 16.0

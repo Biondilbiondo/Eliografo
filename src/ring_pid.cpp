@@ -25,6 +25,10 @@ void ringPID::set_PID_params(float Kp, float Ki, float Kd, float OutMin, float O
     min_error = MinErr;
 }
 
+void ringPID::set_max_speed(float OutMax){
+    outmax = OutMax;
+}
+
 void ringPID::set_PID_vars(float *In, float *Out, float *SetP){
     input = In;
     output = Out;
