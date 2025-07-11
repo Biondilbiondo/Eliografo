@@ -265,6 +265,27 @@ float get_float_default_cfg(const char *k){
         return DEFAULT_AZI_MIN_E;
     if(strcmp(k, "alt_me") == 0)
         return DEFAULT_ALT_MIN_E;
+    
+    if(strcmp(k, "azi_ms") == 0)
+        return DEFAULT_MIN_SPEED;
+    if(strcmp(k, "alt_ms") == 0)
+        return DEFAULT_MIN_SPEED;
+
+    if(strcmp(k, "azi_msv") == 0)
+        return DEFAULT_MIN_SPEED_VALUE;
+    if(strcmp(k, "alt_msv") == 0)
+        return DEFAULT_MIN_SPEED_VALUE;
+
+    if(strcmp(k, "azi_Msv") == 0)
+        return DEFAULT_MAX_SPEED_VALUE;
+    if(strcmp(k, "alt_Msv") == 0)
+        return DEFAULT_MAX_SPEED_VALUE;
+
+    if(strcmp(k, "azi_sm") == 0)
+        return DEFAULT_M_SPEED;
+    if(strcmp(k, "alt_sm") == 0)
+        return DEFAULT_M_SPEED;
+
     return 0.0;
 }
 
@@ -555,6 +576,187 @@ void pid_loop(void){
         azi_PID_enabled = false;
         alt_PID_enabled = false;
     }
+}
+
+bool calibrate_speed(void){
+#define TIME_CAL 2
+#define FAST_INCREMENT 10
+#define SLOW_INCREMENT 2
+    int16_t speed;
+    float a0, a1, t0, t1, sfwd, srev, smean, estimated_m;
+    int16_t minspeed = -1, mcnt;
+    float minspeed_val, maxspeed_val;
+    bool alt_reversed, azi_reversed;
+    motor_driver_enable();
+
+    for(int i=0; i < 10; i++){
+        t0 = get_timestamp_RTC();
+        a0 = read_alt_encoder();
+        t1 = get_timestamp_RTC();
+        smean += t1-t0;
+    }
+    telnet.printf("Estimated time for encoder read %fs\n", smean/10);
+
+    // Check motor/encoder polarity
+    a0 = read_alt_encoder();
+    t0 = get_timestamp_RTC();
+    set_alt_motor_speed(127);
+    delay(TIME_CAL * 1000);
+    set_alt_motor_speed(0);
+    t1 = get_timestamp_RTC();
+    a1 = read_alt_encoder();
+    if((a1-a0)/(t1-t0) < 0){
+        telnet.printf("Alt motor or encoder is reversed.\n");
+        telnet.printf("If mirror moved upword, reverse encoder.\n");
+        telnet.printf("If mirror moved downward, reverse motor.\n");
+        alt_reversed = true;
+    }
+    else{
+        telnet.printf("Alt motor and encoder are OK.\n");
+        telnet.printf("If mirror moved downword, reverse axis.\n");
+        alt_reversed = false;
+    }
+    
+    delay(1000);
+
+    a0 = read_azi_encoder();
+    t0 = get_timestamp_RTC();
+    set_azi_motor_speed(127);
+    delay(TIME_CAL * 1000);
+    set_azi_motor_speed(0);
+    t1 = get_timestamp_RTC();
+    a1 = read_azi_encoder();
+    if((a1-a0)/(t1-t0) < 0){
+        telnet.printf("Azi motor or encoder is reversed.\n");
+        telnet.printf("If mirror moved clockwise, reverse encoder.\n");
+        telnet.printf("If mirror moved counterclockwise, reverse motor.\n");
+        azi_reversed = true;
+    }
+    else{
+        telnet.printf("Azi motor and encoder are OK.\n");
+        telnet.printf("If mirror moved counterclockwise, reverse axis.\n");
+        azi_reversed = false;
+    }
+
+    if(alt_reversed || azi_reversed){
+        motor_driver_disable();
+        return false;
+    }
+
+
+    // Go to 90 degrees to simplify calculations...
+    alt_setpoint = 90.;
+    azi_setpoint = 90.;
+    start_pid();
+    while(alt_PID_enabled || azi_PID_enabled) pid_loop();
+    delay(1000);
+
+    int16_t increment = FAST_INCREMENT;
+    maxspeed_val = 0.;
+    mcnt = 0;
+    for(speed=0; speed < 128; speed += increment){
+        a0 = read_alt_encoder();
+        t0 = get_timestamp_RTC();
+        set_alt_motor_speed(speed);
+        delay(TIME_CAL * 1000);
+        set_alt_motor_speed(0);
+        t1 = get_timestamp_RTC();
+        a1 = read_alt_encoder();
+        sfwd = (a1-a0)/(t1-t0);
+
+        //telnet.printf("(FWD %d) A1 %.1f A0 %.1f\n", speed, a1, a0);
+        telnet.printf("(FWD %d) Distance %.1f deg, time %.2f s, speed %.1f deg/s\n", speed, a1-a0, t1-t0, (a1-a0)/(t1-t0));
+        //telnet.printf("%+03d %.2f\n", speed, sfwd);
+        a0 = a1;
+        t0 = get_timestamp_RTC();
+        set_alt_motor_speed(-speed);
+        delay(TIME_CAL * 1000);
+        set_alt_motor_speed(0);
+        t1 = get_timestamp_RTC();
+        a1 = read_alt_encoder();
+        //telnet.printf("(REV %d) Distance %.1f deg, time %.2f s, speed %.1f deg/s\n", speed, a1-a0, t1-t0, (a1-a0)/(t1-t0));
+        srev = (a1-a0)/(t1-t0);
+
+        //telnet.printf("(REV %d) A1 %.1f A0 %.1f\n", speed, a1, a0);
+        telnet.printf("(REV %d) Distance %.1f deg, time %.2f s, speed %.1f deg/s\n", speed, a1-a0, t1-t0, (a1-a0)/(t1-t0));
+        //telnet.printf("%+03d %.2f\n", -speed, srev);
+        smean = (sfwd - srev) / 2;
+
+        if(smean > MIN_ALLOWED_SPEED && minspeed < 0){
+            minspeed = speed;
+            minspeed_val = smean;
+            increment = SLOW_INCREMENT;
+            //break;
+        }
+        if(minspeed > 0 && speed > 122){
+            maxspeed_val += smean;
+            mcnt++;
+        }
+    }
+    
+    maxspeed_val /= mcnt;
+    estimated_m = (maxspeed_val-minspeed_val) / (127-minspeed);
+    telnet.printf("Alt Min speed: %d %.2f\nAlt Max speed %d %.2f\nAlt Estimated m: %f\n", minspeed, minspeed_val, 127, maxspeed_val, estimated_m);
+    HGPrefs.putFloat("alt_ms", minspeed);
+    HGPrefs.putFloat("alt_msv", minspeed_val);
+    HGPrefs.putFloat("alt_Msv", maxspeed_val);
+    HGPrefs.putFloat("alt_sm", estimated_m);
+
+    minspeed = -1;
+    increment = FAST_INCREMENT;
+    maxspeed_val = 0.;
+    mcnt = 0;
+    for(speed=0; speed < 128; speed += increment){
+        a0 = read_azi_encoder();
+        t0 = get_timestamp_RTC();
+        set_azi_motor_speed(speed);
+        delay(TIME_CAL * 1000);
+        set_azi_motor_speed(0);
+        t1 = get_timestamp_RTC();
+        a1 = read_azi_encoder();
+        sfwd = (a1-a0)/(t1-t0);
+
+        //telnet.printf("(FWD %d) A1 %.1f A0 %.1f\n", speed, a1, a0);
+        telnet.printf("(FWD %d) Distance %.1f deg, time %.2f s, speed %.1f deg/s\n", speed, a1-a0, t1-t0, (a1-a0)/(t1-t0));
+        //telnet.printf("%+03d %.2f\n", speed, sfwd);
+        a0 = a1;
+        t0 = get_timestamp_RTC();
+        set_azi_motor_speed(-speed);
+        delay(TIME_CAL * 1000);
+        set_azi_motor_speed(0);
+        t1 = get_timestamp_RTC();
+        a1 = read_azi_encoder();
+        //telnet.printf("(REV %d) Distance %.1f deg, time %.2f s, speed %.1f deg/s\n", speed, a1-a0, t1-t0, (a1-a0)/(t1-t0));
+        srev = (a1-a0)/(t1-t0);
+
+        //telnet.printf("(REV %d) A1 %.1f A0 %.1f\n", speed, a1, a0);
+        telnet.printf("(REV %d) Distance %.1f deg, time %.2f s, speed %.1f deg/s\n", speed, a1-a0, t1-t0, (a1-a0)/(t1-t0));
+        //telnet.printf("%+03d %.2f\n", -speed, srev);
+        smean = (sfwd - srev) / 2;
+
+        if(smean > MIN_ALLOWED_SPEED && minspeed < 0){
+            minspeed = speed;
+            minspeed_val = smean;
+            increment = SLOW_INCREMENT;
+            //break;
+        }
+        if(minspeed > 0 && speed > 122){
+            maxspeed_val += smean;
+            mcnt++;
+        }
+    }
+    
+    maxspeed_val /= mcnt;
+    estimated_m = (maxspeed_val-minspeed_val) / (127-minspeed);
+    telnet.printf("Azi Min speed: %d %.2f\nAlt Max speed %d %.2f\nAlt Estimated m: %f\n", minspeed, minspeed_val, 127, maxspeed_val, estimated_m);
+    
+    HGPrefs.putFloat("azi_ms", minspeed);
+    HGPrefs.putFloat("azi_msv", minspeed_val);
+    HGPrefs.putFloat("azi_Msv", maxspeed_val);
+    HGPrefs.putFloat("azi_sm", estimated_m);
+
+    motor_driver_disable();
+    return true;
 }
 
 void ray_to_setpoints(float alt, float azi){
@@ -1427,6 +1629,10 @@ bool cmd_parse(char *buf){
     else if(strcmp(tok, "wifi-off") == 0){
         return wifi_off();
     }
+    else if(strcmp(tok, "calibrate-speed") == 0){
+        calibrate_speed();
+        return true;
+    }    
     else{
         return cmd_err(tok);
     }
@@ -1539,13 +1745,15 @@ void setup_motors(){
     aziPID.set_PID_params(get_float_cfg("azi_kp"),
                           get_float_cfg("azi_ki"),
                           get_float_cfg("azi_kd"),
-                          80, 126,
+                          get_float_cfg("azi_ms"),
+                          127,
                           get_float_cfg("azi_me"));
 
     altPID.set_PID_params(get_float_cfg("alt_kp"),
                           get_float_cfg("alt_ki"),
                           get_float_cfg("alt_kd"),
-                          80, 126,
+                          get_float_cfg("alt_ms"),
+                          127,
                           get_float_cfg("alt_me"));
 
     //Interrupt
@@ -1653,7 +1861,7 @@ void setup() {
     if(WiFi_ok) setup_telnet();
 
     /*Just for testing sleep mode*/
-    delay(1000);
+    /*delay(1000);
     motor_driver_enable();
     alt_setpoint = 0.;
     azi_setpoint = 0.;
@@ -1661,7 +1869,7 @@ void setup() {
     alt_PID_enabled = true;
 
     while(azi_PID_enabled || alt_PID_enabled) pid_loop();
-    motor_driver_disable();
+    motor_driver_disable();*/
 }
 
 void loop() {
