@@ -83,8 +83,7 @@ float mir[3];
 float ory[3];
 float ory_alt = 0.0, ory_azi = 0.0;
 
-float logs[1000];
-int logs_cnt = 0;
+bool littleFS_ok = false;
 
 // Time/RTC Routines
 void update_time_from_NTP(void){
@@ -211,6 +210,91 @@ void get_time(uint16_t *year, uint8_t *month, uint8_t *day, uint8_t *hours, uint
     *year = 1970;
 }
 
+// Logging
+#define LOG_DEBUG 6
+#define LOG_INFO 2
+#define LOG_WARNING 1
+#define LOG_ERROR 0 
+
+#define MAX_LOG_FILES 2
+#define LOG_LEVEL LOG_DEBUG
+#define SERIAL_LOG_ENABLED
+#define LITTLEFS_LOG_ENABLED
+void sys_log(uint8_t type, const char *format, ...)
+{
+    char loc_buf[64];
+    char * temp = loc_buf;
+    va_list arg;
+    va_list copy;
+    va_start(arg, format);
+    va_copy(copy, arg);
+    int len = vsnprintf(temp, sizeof(loc_buf), format, copy);
+    va_end(copy);
+    if(len < 0) {
+        va_end(arg);
+        return;
+    }
+    if(len >= (int)sizeof(loc_buf)){  // comparation of same sign type for the compiler
+        temp = (char*) malloc(len+1);
+        if(temp == NULL) {
+            va_end(arg);
+            return;
+        }
+        len = vsnprintf(temp, len+1, format, arg);
+    }
+    va_end(arg);
+
+    char header[64];
+    char dc;
+    uint8_t m, d, h, min;
+    uint16_t y;
+    float s;
+    get_time(&y, &m, &d, &h, &min, &s);
+    switch(type){
+        case LOG_DEBUG:
+            dc = 'D';
+            break;
+        case LOG_INFO:
+            dc = 'I';
+            break;
+        case LOG_WARNING:
+            dc = 'W';
+            break;
+        case LOG_ERROR:
+            dc = 'E';
+            break;
+        default:
+            dc = '?';
+    }
+
+    sprintf(header, "[%04d-%02d-%02d %02d:%02d:%04.1f][%c] ", y, m, d, h, min, s, dc);
+
+    if(LOG_LEVEL >= type){
+#ifdef SERIAL_LOG_ENABLED
+        Serial.printf("%s %s\n", header, temp);
+#endif
+#ifdef LITTLEFS_LOG_ENABLED
+        char path[64];
+        sprintf(path, "/log/%04d_%02d_%02d.log", y, m, d);
+        if(littleFS_ok){
+            File file;
+            if(LittleFS.exists(path)) 
+                file = LittleFS.open(path, FILE_APPEND);
+            else
+                file = LittleFS.open(path, FILE_WRITE);
+            if(!file) return;
+            file.printf("%s %s\n", header, temp);
+            file.close();
+        }
+#endif
+    }
+    
+    if(temp != loc_buf){
+        free(temp);
+    }
+    return;
+}
+
 // Scheduled tasks
 /*void add_scheduled_task(uint32_t h, uint32_t m, uint32_t s){
     if(task_cnt < MAX_DAILY_TASKS){
@@ -230,15 +314,14 @@ bool load_schedule_from_file(const char *path){
     String s;
     char cs[1024];
     char *tok;
-    Serial.printf("Reading file: %s\r\n", path);
+    sys_log(LOG_INFO, "Reading schedule file: %s", path);
 
     File file = LittleFS.open(path);
     if(!file || file.isDirectory()){
-        Serial.println("- failed to open file for reading");
+        sys_log(LOG_ERROR, "Failed to open file for reading");
         return false;
     }
 
-    Serial.println("- read from file:");
     int i = 0;
     uint32_t h, m, sec;
     uint8_t type;
@@ -258,7 +341,7 @@ bool load_schedule_from_file(const char *path){
         if(strcmp(tok, "wifi") == 0){
             type = WIFI_TASK;
             add_scheduled_task_wifi(h, m, sec);
-            Serial.printf("Added wifi task at %02d:%02d:%02d\n", h, m, sec);
+            sys_log(LOG_INFO, "Added wifi task at %02d:%02d:%02d", h, m, sec);
         }
         i++;
     }
@@ -287,6 +370,7 @@ void schedule_task_loop(void){
             /*telnet.print("Running daily task\n");
             telnet.printf("%02d at %02d:%02d:%02d\n", i, hours, minutes, (int) seconds);*/
             if(sch_type[i] == WIFI_TASK){
+                sys_log(LOG_INFO, "WiFi turned on by task number %d", i);
                 wifi_on();
             }
             sch_run[i] = true;
@@ -365,9 +449,7 @@ bool set_float_cfg(const char *key, float val){
         return true;
     }
     else{
-        char obuf[32];
-        sprintf(obuf, "Key %s not found.\n", key);
-        telnet.print(obuf);
+        sys_log(LOG_ERROR, "Requested key to set %s not found.", key);
         return false;
     }
 }
@@ -895,15 +977,15 @@ void ray_to_setpoints(float alt, float azi){
 
 // littleFS routine
 String *list_dir(const char *dirname){
-    Serial.printf("Listing directory: %s\r\n", dirname);
-
     File root = LittleFS.open(dirname);
+    if(dirname == NULL) 
+        return NULL;
     if(!root){
-        Serial.println("- failed to open directory");
+        sys_log(LOG_ERROR, "Failed to open directory %s", dirname);
         return NULL;
     }
     if(!root.isDirectory()){
-        Serial.println(" - not a directory");
+        sys_log(LOG_ERROR, "%s is not a directory, cannot list", dirname);
         return NULL;
     }
 
@@ -927,11 +1009,11 @@ String *list_dir(const char *dirname){
 }
 
 bool write_scene_on_file(int s){
-    Serial.printf("Writing file: %s\r\n", "/scenes/"+scenes_name[s]);
+    sys_log(LOG_INFO, "Writing file: %s", "/scenes/"+scenes_name[s]);
 
     File file = LittleFS.open("/scenes/"+scenes_name[s], FILE_WRITE);
     if(!file){
-        Serial.println("- failed to open file for writing");
+        sys_log(LOG_INFO, "Error in writing file: %s", "/scenes/"+scenes_name[s]);
         return false;
     }
     for(int i=0; i < scene_len[s]; i++){
@@ -956,12 +1038,11 @@ int create_new_empty_scene(const char *name){
 }
 
 bool remove_file(String name){
-    Serial.printf("Deleting file: %s\r\n", name.c_str());
+    sys_log(LOG_INFO, "Deleting file: %s", name.c_str());
     if(LittleFS.remove(name.c_str())){
-        Serial.println("- file deleted");
         return true;
     } else {
-        Serial.println("- delete failed");
+        sys_log(LOG_ERROR, "Delete failed");
         return false;
     }
 }
@@ -992,15 +1073,14 @@ bool remove_scene(int s){
 
 int load_scene_from_file(const char *path, float *scene_data, int seq_len){
     String s;
-    Serial.printf("Reading file: %s\r\n", path);
+    sys_log(LOG_INFO, "Reading scene file: %s", path);
 
     File file = LittleFS.open(path);
     if(!file || file.isDirectory()){
-        Serial.println("- failed to open file for reading");
+        sys_log(LOG_ERROR, "Failed to open file for reading");
         return -1;
     }
 
-    Serial.println("- read from file:");
     int i = 0;
     while(file.available() && i < seq_len){
         s = file.readStringUntil('\n');
@@ -1153,9 +1233,11 @@ bool wifi_watchdog_cycle(void){
     if(millis() - wifi_watchdog_0 > WIFI_WATCHDOG_TIME){
         if(WiFi_ok && telnet.isConnected()){
             wifi_watchdog_0 = millis();
+            sys_log(LOG_INFO, "Wifi watchdog reset, a telnet client is conneccted.");
         }
-        else{
+        else if(WiFi_ok){
             wifi_off();
+            sys_log(LOG_INFO, "Wifi turned off by watchdog");
             return true;
         }
     }
@@ -1350,10 +1432,6 @@ bool cmd_pid_vals(void){
     telnet.print(buf);
     sprintf(buf, "%f\n\n", get_timestamp_RTC());
     telnet.print(buf);
-    for(int i=0; i<logs_cnt; i++){
-        sprintf(buf, "log: %d %f\n", i, logs[i]);
-        telnet.print(buf);
-    }
     return true;
 }
 
@@ -1364,7 +1442,15 @@ bool cmd_set(char *buf){
     key = strtok_r(NULL, " \n\r", &buf);
     rest = strtok_r(NULL, "\r\n", &buf);
     sscanf(rest, "%f", &val);
-    return set_float_cfg(key, val);
+    if(set_float_cfg(key, val)){
+        return true;
+    }
+    else{
+        char obuf[32];
+        sprintf(obuf, "Key %s not found.\n", key);
+        telnet.print(obuf);
+        return false;
+    }
 }
 
 bool cmd_get(char *buf){
@@ -1728,6 +1814,27 @@ bool cmd_print_scene(char *rest){
     return  true;
 }
 
+bool cmd_sys_log(void){
+    String *fnames = list_dir("/log/");
+    String s;
+    for(int i=0; i < MAX_LOG_FILES; i++){
+        if(fnames[i] == "<<END>>") break;
+        File file = LittleFS.open("/log/"+fnames[i]);
+        if(!file || file.isDirectory()){
+            sys_log(LOG_ERROR, "Failed to open file for reading %s", ("/log/"+fnames[i]).c_str());
+            return false;
+        }
+
+        int j = 0;
+        while(file.available()){
+            s = file.readStringUntil('\n');
+            telnet.println(s.c_str());
+        }
+        file.close();
+    }
+    return true;
+}
+
 bool cmd_parse(char *buf){
     char *tok, *rest;
     const char *delim = " \n\r";
@@ -1858,6 +1965,9 @@ bool cmd_parse(char *buf){
         calibrate_speed();
         return true;
     }    
+    else if(strcmp(tok, "syslog") == 0){
+        return cmd_sys_log();
+    }  
     else{
         return cmd_err(tok);
     }
@@ -1866,9 +1976,7 @@ bool cmd_parse(char *buf){
 // Setup Routines
 
 void onTelnetConnect(String ip) {
-    Serial.print("- Telnet: ");
-    Serial.print(ip);
-    Serial.println(" connected");
+    sys_log(LOG_INFO, "Telnet %s client connected", ip.c_str());
 
     char buf[16];
     sprintf(buf, "%012x\n", chip_id);
@@ -1880,21 +1988,15 @@ void onTelnetConnect(String ip) {
 }
 
 void onTelnetDisconnect(String ip) {
-    Serial.print("- Telnet: ");
-    Serial.print(ip);
-    Serial.println(" disconnected");
+    sys_log(LOG_INFO, "Telnet %s client disconnected", ip.c_str());
 }
 
 void onTelnetReconnect(String ip) {
-    Serial.print("- Telnet: ");
-    Serial.print(ip);
-    Serial.println(" reconnected");
+    sys_log(LOG_INFO, "Telnet %s client reconnected", ip.c_str());
 }
 
 void onTelnetConnectionAttempt(String ip) {
-    Serial.print("- Telnet: ");
-    Serial.print(ip);
-    Serial.println(" tried to connected");
+    sys_log(LOG_INFO, "Telnet %s client tried to connect", ip.c_str());
 }
 
 void onTelnetInput(String str) {
@@ -1919,12 +2021,11 @@ void setup_telnet() {
   telnet.onDisconnect(onTelnetDisconnect);
   telnet.onInputReceived(onTelnetInput);
 
-  Serial.print("- Telnet: ");
   if (telnet.begin(TELNET_PORT)) {
-    Serial.println("running");
+        sys_log(LOG_INFO, "Telnet running");
   } 
   else {
-    Serial.println("error.");
+        sys_log(LOG_ERROR, "Telnet startup error");
   }
 }
 
@@ -1934,11 +2035,13 @@ void setup_pref(void){
 
 void setup_littlefs(void){
     if(!LittleFS.begin(true)){
-      Serial.println("LittleFS Mount Failed");
-      return;
+        sys_log(LOG_ERROR, "LittleFS Mount Failed");
+        littleFS_ok = false;
+        return;
    }
    else{
-       Serial.println("Little FS Mounted Successfully");
+        sys_log(LOG_INFO, "Little FS Mounted Successfully");
+        littleFS_ok = true;
    }
 }
 
@@ -2006,21 +2109,18 @@ void setup_motors(){
 void setup_wifi(){
     WiFi.begin(ssid, password);
   
-    Serial.println();
-    Serial.print("Connecting");
-    for(uint8_t i=0;i < 20 && WiFi.status() != WL_CONNECTED; i++)
+    sys_log(LOG_INFO, "Attempting wifi connection.");
+#define N_WIFI_ATTEMPTS 10
+    for(uint8_t i=0;i < N_WIFI_ATTEMPTS && WiFi.status() != WL_CONNECTED; i++)
     {
-      delay(500);
-      Serial.print(".");
+      delay(1000);
     }
     if(WiFi.status() == WL_CONNECTED){
-        Serial.println("Connected");
-        Serial.print("IP Address is: ");
-        Serial.println(WiFi.localIP());
+        sys_log(LOG_INFO, "Connected to Wifi IP address is %s.", WiFi.localIP().toString().c_str());
         WiFi_ok = true;
     }
     else{
-        Serial.println("Connection failed after 10s.");
+        sys_log(LOG_WARNING, "WiFi connection failed after %d s.", N_WIFI_ATTEMPTS);
         WiFi_ok = false;
     }
     wifi_watchdog_0 = millis();
@@ -2079,13 +2179,14 @@ void setup() {
 
     // Serial communication
     Serial.begin(9600);
+    setup_littlefs();
 
-    Serial.printf("\nHelioGraph %012x\n", chip_id);
-    Serial.printf("Bootnumber %d\n", bootn);
+    sys_log(LOG_INFO, "This is heligraph %012x", chip_id);
+    sys_log(LOG_INFO, "Bootnumber %d", bootn);
 
     current_lon = get_float_cfg("lon");
     current_lat = get_float_cfg("lat");
-    setup_littlefs();
+    sys_log(LOG_INFO, "My Position is LON %.3f LAT %.3f", current_lon, current_lat);
     load_scenes_from_file();
     load_schedule_from_file("/schedules/wifi.sch");
 
