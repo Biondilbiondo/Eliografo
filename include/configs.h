@@ -41,6 +41,11 @@
 
 #define MAX_SLEEP_S (2*3600)
 
+// Timer for wifi connections in ms 
+// #define WIFI_WATCHDOG_TIME (600000L) // 10 min
+//#define WIFI_WATCHDOG_TIME (300000L) // 5 min
+#define WIFI_WATCHDOG_TIME (60000L) // 1 min
+
 
 #ifndef USE_MPU6050
 #define USE_MPU9250

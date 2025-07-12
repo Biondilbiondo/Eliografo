@@ -5,6 +5,7 @@
 const char* ssid = WIFI_SSID;
 const char* password = WIFI_PASSWORD;
 bool WiFi_ok = false;
+uint32_t wifi_watchdog_0;
 
 //WiFiServer ComServer(23);
 //WiFiClient Controller;
@@ -1094,6 +1095,19 @@ bool wifi_on(void){
     return true;
 }
 
+bool wifi_watchdog_cycle(void){
+    if(millis() - wifi_watchdog_0 > WIFI_WATCHDOG_TIME){
+        if(WiFi_ok && telnet.isConnected()){
+            wifi_watchdog_0 = millis();
+        }
+        else{
+            wifi_off();
+            return true;
+        }
+    }
+    return false;
+}
+
 bool run_pid_test(){
     float alt = 0.0, azi=0.0;
 
@@ -1966,6 +1980,7 @@ void setup_wifi(){
         Serial.println("Connection failed after 10s.");
         WiFi_ok = false;
     }
+    wifi_watchdog_0 = millis();
 }
 
 void setup_ntp(void){
@@ -2059,12 +2074,15 @@ void setup() {
 void loop() {
     if(WiFi_ok) telnet.loop();
     schedule_task_loop();
+    wifi_watchdog_cycle();
 
+    // TODO improve
     check_external_ADC();
     if(!external_ADC_ok){
         motor_driver_disable();
         return;
     }
+    //---
 
     
     if(manual_control_enabled || solar_control_enabled){

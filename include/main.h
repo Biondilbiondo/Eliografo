@@ -43,7 +43,6 @@
 #define MOTOR_PWM_RES 8
 #define MOTOR_PWM_FREQ 35000
 
-
 #define CMD_BUF_LEN 256
 
 #define PREF_RW_MODE false
