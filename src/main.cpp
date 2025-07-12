@@ -212,12 +212,11 @@ void get_time(uint16_t *year, uint8_t *month, uint8_t *day, uint8_t *hours, uint
     *year = 1970;
 }
 
-uint32_t days_since_epoch(uint16_t year, uint8_t month, uint8_t day){
-    int a = (14 - (int) month) / 12;
-    int y = (int) year + 4800 - a;
-    int m = (int) month + 12 * a - 3;
-
-    uint32_t days = (int) day + (153ul * m + 2) / 5 + 365ul * y + y / 4ul - y / 100ul + y / 400ul - 32045ul;
+uint32_t days_since_epoch(int year, int month, int day){
+    uint16_t a = (14 - month) / 12;
+    uint16_t y = year + 4800 - a;
+    uint16_t m = month + 12 * a - 3;
+    uint32_t days = day + ((153ul * m + 2) / 5) + (365ul * y) + (y / 4ul) - (y / 100ul) + y / 400ul - 32045ul - 1721426ul;
     return days;
 }
 
@@ -236,7 +235,8 @@ bool check_time(void){
 #define LOG_WARNING 1
 #define LOG_ERROR 0 
 
-#define MAX_LOG_FILES 1
+#define MAX_LOG_FILES 120
+#define LOG_DELETE_AFTER_DAYS 2
 #define LOG_LEVEL LOG_INFO
 #define SERIAL_LOG_ENABLED
 #define LITTLEFS_LOG_ENABLED
@@ -367,15 +367,15 @@ void cleanup_syslog(void){
     
     uint32_t today, log_date;
     get_time(&y, &m, &d, &h, &min, &sec);
-    today = days_since_epoch(y, m, d);
+    today = days_since_epoch((int) y, (int) m, (int) d);
     for(int i=0; i < MAX_LOG_FILES; i++){
         if(fnames[i] == "<<END>>") break;
         int ylog, mlog, dlog;
         sscanf(fnames[i].c_str(), "%04d_%02d_%02d.log", &ylog, &mlog, &dlog);
         sys_log(LOG_DEBUG, "Filename %s: year %d, month %d, day %d", fnames[i].c_str(), y, m, d);
-        log_date = days_since_epoch((uint16_t) y, (uint8_t) m, (uint8_t) d);
+        log_date = days_since_epoch((int) ylog, (int) mlog, (int) dlog);
         sys_log(LOG_DEBUG, "Today is %d d.a.e. logfile %s is %d d.a.e", today, fnames[i].c_str(), log_date);
-        if(today - log_date > MAX_LOG_FILES){
+        if(today - log_date > LOG_DELETE_AFTER_DAYS){
             remove_file("/log/"+fnames[i]);
         }
         
@@ -2282,7 +2282,6 @@ void setup() {
     setup_i2c();
     setup_rtc();
     setup_littlefs();
-    cleanup_syslog();
 
     sys_log(LOG_INFO, "This is heligraph %012x", chip_id);
     sys_log(LOG_INFO, "Bootnumber %d", bootn);
@@ -2322,6 +2321,7 @@ void setup() {
         sys_log(LOG_ERROR, "No time information is available. Sleeping until I now what time is it.");
         sleep_for_seconds(MAX_SLEEP_S);
     }
+    cleanup_syslog();
 }
 
 void loop() {
