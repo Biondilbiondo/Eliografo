@@ -210,18 +210,38 @@ void get_time(uint16_t *year, uint8_t *month, uint8_t *day, uint8_t *hours, uint
     *year = 1970;
 }
 
-// Logging
+uint32_t days_since_epoch(uint16_t year, uint8_t month, uint8_t day){
+    int a = (14 - (int) month) / 12;
+    int y = (int) year + 4800 - a;
+    int m = (int) month + 12 * a - 3;
+
+    uint32_t days = (int) day + (153ul * m + 2) / 5 + 365ul * y + y / 4ul - y / 100ul + y / 400ul - 32045ul;
+    return days;
+}
+
+bool check_time(void){
+    uint16_t y;
+    uint8_t m, d, h, min;
+    float s;
+    get_time(&y, &m, &d, &h, &min, &s);
+    if(y < 2025) return false;
+    return true;
+}
+
+// Logging & LittleFS
 #define LOG_DEBUG 6
 #define LOG_INFO 2
 #define LOG_WARNING 1
 #define LOG_ERROR 0 
 
-#define MAX_LOG_FILES 2
-#define LOG_LEVEL LOG_DEBUG
+#define MAX_LOG_FILES 1
+#define LOG_LEVEL LOG_INFO
 #define SERIAL_LOG_ENABLED
 #define LITTLEFS_LOG_ENABLED
 void sys_log(uint8_t type, const char *format, ...)
 {
+    if(LOG_LEVEL < type) return;
+
     char loc_buf[64];
     char * temp = loc_buf;
     va_list arg;
@@ -269,25 +289,23 @@ void sys_log(uint8_t type, const char *format, ...)
 
     sprintf(header, "[%04d-%02d-%02d %02d:%02d:%04.1f][%c] ", y, m, d, h, min, s, dc);
 
-    if(LOG_LEVEL >= type){
 #ifdef SERIAL_LOG_ENABLED
         Serial.printf("%s %s\n", header, temp);
 #endif
 #ifdef LITTLEFS_LOG_ENABLED
-        char path[64];
-        sprintf(path, "/log/%04d_%02d_%02d.log", y, m, d);
-        if(littleFS_ok){
-            File file;
-            if(LittleFS.exists(path)) 
-                file = LittleFS.open(path, FILE_APPEND);
-            else
-                file = LittleFS.open(path, FILE_WRITE);
-            if(!file) return;
-            file.printf("%s %s\n", header, temp);
-            file.close();
-        }
-#endif
+    char path[64];
+    sprintf(path, "/log/%04d_%02d_%02d.log", y, m, d);
+    if(littleFS_ok){
+        File file;
+        if(LittleFS.exists(path)) 
+            file = LittleFS.open(path, FILE_APPEND);
+        else
+            file = LittleFS.open(path, FILE_WRITE);
+        if(!file) return;
+        file.printf("%s %s\n", header, temp);
+        file.close();
     }
+#endif
     
     if(temp != loc_buf){
         free(temp);
@@ -295,6 +313,72 @@ void sys_log(uint8_t type, const char *format, ...)
     return;
 }
 
+// littleFS routine
+String *list_dir(const char *dirname){
+    File root = LittleFS.open(dirname);
+    if(dirname == NULL) 
+        return NULL;
+    if(!root){
+        sys_log(LOG_ERROR, "Failed to open directory %s", dirname);
+        return NULL;
+    }
+    if(!root.isDirectory()){
+        sys_log(LOG_ERROR, "%s is not a directory, cannot list", dirname);
+        return NULL;
+    }
+
+    File file = root.openNextFile();
+    uint32_t nfiles = 0;
+    while(file){
+        nfiles ++;
+        file = root.openNextFile();
+    }
+    
+    root.rewindDirectory();
+    String *fnames = new String[nfiles+1];
+    for(int i=0; i < nfiles; i++){
+        file = root.openNextFile();
+        fnames[i] = file.name();
+    }
+    fnames[nfiles] = "<<END>>";
+    root.close();
+
+    return fnames;
+}
+
+bool remove_file(String name){
+    sys_log(LOG_INFO, "Deleting file: %s", name.c_str());
+    if(LittleFS.remove(name.c_str())){
+        return true;
+    } else {
+        sys_log(LOG_ERROR, "Delete failed");
+        return false;
+    }
+}
+
+void cleanup_syslog(void){
+    String *fnames = list_dir("/log/");
+    String s;
+    uint16_t y;
+    uint8_t m, d, h, min;
+    float sec;
+    
+    uint32_t today, log_date;
+    get_time(&y, &m, &d, &h, &min, &sec);
+    today = days_since_epoch(y, m, d);
+    for(int i=0; i < MAX_LOG_FILES; i++){
+        if(fnames[i] == "<<END>>") break;
+        int ylog, mlog, dlog;
+        sscanf(fnames[i].c_str(), "%04d_%02d_%02d.log", &ylog, &mlog, &dlog);
+        sys_log(LOG_DEBUG, "Filename %s: year %d, month %d, day %d", fnames[i].c_str(), y, m, d);
+        log_date = days_since_epoch((uint16_t) y, (uint8_t) m, (uint8_t) d);
+        sys_log(LOG_DEBUG, "Today is %d d.a.e. logfile %s is %d d.a.e", today, fnames[i].c_str(), log_date);
+        if(today - log_date > MAX_LOG_FILES){
+            remove_file("/log/"+fnames[i]);
+        }
+        
+    }
+}
 // Scheduled tasks
 /*void add_scheduled_task(uint32_t h, uint32_t m, uint32_t s){
     if(task_cnt < MAX_DAILY_TASKS){
@@ -369,13 +453,34 @@ void schedule_task_loop(void){
         if(abs(timestamp - (float) sch_timestamp[i]) < SCH_TIME_DEL){
             /*telnet.print("Running daily task\n");
             telnet.printf("%02d at %02d:%02d:%02d\n", i, hours, minutes, (int) seconds);*/
-            if(sch_type[i] == WIFI_TASK){
+            if(sch_type[i] == WIFI_TASK && !WiFi_ok){
                 sys_log(LOG_INFO, "WiFi turned on by task number %d", i);
+                sys_log(LOG_DEBUG, "Timestamp %f schedule timestamp %f", timestamp, (float) sch_timestamp[i]);
                 wifi_on();
             }
             sch_run[i] = true;
         }   
     }
+}
+
+float seconds_to_next_schedule(void){
+    uint16_t year;
+    uint8_t month;
+    uint8_t day;
+    uint8_t hours;
+    uint8_t minutes;
+    float seconds;
+
+    get_time(&year, &month, &day, &hours, &minutes, &seconds);
+    float timestamp = hours * 3600 + minutes * 60 + seconds;
+    float next_schedule = -1, dt;
+
+    for(int i=0; i<task_cnt; i++){
+        dt = sch_timestamp[i] - timestamp;
+        if(dt < 0) dt = sch_timestamp[i] + (SECONDS_PER_DAY - timestamp);
+        if(next_schedule < 0 || dt < next_schedule) next_schedule = dt;
+    }
+    return next_schedule;
 }
 
 // Preferences Routines
@@ -529,7 +634,8 @@ void update_sun_vec(void){
 void motor_driver_enable(void){
     driver_on = true;
     digitalWrite(DRIVER_ENABLE, LOW);
-    delay(100);
+    // time for the 5V to stabilize
+    delay(1000);
 }
 
 void motor_driver_disable(void){
@@ -706,6 +812,13 @@ float read_alt_encoder(void){
     return deg; // Just to put something here
 }
 
+void pid_control_reset(void){
+    solar_control_enabled = false;
+    manual_control_enabled = false;
+    azi_PID_enabled = false;
+    alt_PID_enabled = false;
+}
+
 void start_pid(void){
     alt_PID_enabled = true;
     azi_PID_enabled = true;
@@ -744,7 +857,55 @@ float compute_angle_delta(float a1, float a2){
     return delta;
 }
 
+void set_pid_goto(float alt, float azi){
+    float est_t_alt, est_t_azi, maxt;
+    float delta_alt, delta_azi;
+
+    reset_pid_watchdog();
+
+    pid_control_reset();
+    alt_setpoint = alt;
+    azi_setpoint = azi;
+
+    if(!external_ADC_ok) return;
+    alt_encoder_val = read_alt_encoder();
+    azi_encoder_val = read_azi_encoder();
+    delta_alt = abs(compute_angle_delta(alt_encoder_val, alt_setpoint));
+    delta_azi = abs(compute_angle_delta(azi_encoder_val, azi_setpoint));
+    
+    est_t_alt = delta_alt/alt_motor_max_sv;
+    est_t_azi = delta_azi/azi_motor_max_sv;
+    if(est_t_alt > est_t_azi)
+        maxt = est_t_alt;
+    else
+        maxt = est_t_azi;
+    
+    if(maxt < 1.) maxt = 1.;
+    set_pid_watchdog(WATCHDOG_TIME_FACTOR*maxt);
+
+    start_pid();
+}
+
 void pid_loop(void){
+    if(pid_watchdog_t0 > 0 && pid_watchdog_elap > 0){
+        float dt = get_timestamp_RTC() - pid_watchdog_t0;
+        if(dt > pid_watchdog_elap || dt < 0){
+            azi_motor_standby();
+            alt_motor_standby();
+            azi_PID_enabled = false;
+            alt_PID_enabled = false;
+            sys_log(LOG_ERROR, "PID loop killed by watchdog.");
+            return;
+        }
+    }
+    if(!external_ADC_ok){
+        azi_motor_standby();
+        alt_motor_standby();
+        azi_PID_enabled = false;
+        alt_PID_enabled = false;
+        sys_log(LOG_ERROR, "PID loop killed because ADC is not working.");
+        return;
+    }
     if(alt_PID_enabled){
         alt_encoder_val = read_alt_encoder();
         telnet.printf("ALT ENC %f SETP %f\n", alt_encoder_val, alt_setpoint);
@@ -766,16 +927,6 @@ void pid_loop(void){
         alt_motor_standby();
         azi_PID_enabled = false;
         alt_PID_enabled = false;
-    }
-    if(pid_watchdog_t0 > 0 && pid_watchdog_elap > 0){
-        float dt = get_timestamp_RTC() - pid_watchdog_t0;
-        if(dt > pid_watchdog_elap || dt < 0){
-            azi_motor_standby();
-            alt_motor_standby();
-            azi_PID_enabled = false;
-            alt_PID_enabled = false;
-            telnet.print("Killed by watchdog!\n");
-        }
     }
 }
 
@@ -846,9 +997,7 @@ bool calibrate_speed(void){
 
 
     // Go to 90 degrees to simplify calculations...
-    alt_setpoint = 90.;
-    azi_setpoint = 90.;
-    start_pid();
+    set_pid_goto(90., 90.);
     while(alt_PID_enabled || azi_PID_enabled) pid_loop();
     delay(1000);
 
@@ -975,39 +1124,6 @@ void ray_to_setpoints(float alt, float azi){
     if(azi_setpoint < 0) azi_setpoint += 360.0;
 }
 
-// littleFS routine
-String *list_dir(const char *dirname){
-    File root = LittleFS.open(dirname);
-    if(dirname == NULL) 
-        return NULL;
-    if(!root){
-        sys_log(LOG_ERROR, "Failed to open directory %s", dirname);
-        return NULL;
-    }
-    if(!root.isDirectory()){
-        sys_log(LOG_ERROR, "%s is not a directory, cannot list", dirname);
-        return NULL;
-    }
-
-    File file = root.openNextFile();
-    uint32_t nfiles = 0;
-    while(file){
-        nfiles ++;
-        file = root.openNextFile();
-    }
-    
-    root.rewindDirectory();
-    String *fnames = new String[nfiles+1];
-    for(int i=0; i < nfiles; i++){
-        file = root.openNextFile();
-        fnames[i] = file.name();
-    }
-    fnames[nfiles] = "<<END>>";
-    root.close();
-
-    return fnames;
-}
-
 bool write_scene_on_file(int s){
     sys_log(LOG_INFO, "Writing file: %s", "/scenes/"+scenes_name[s]);
 
@@ -1035,16 +1151,6 @@ int create_new_empty_scene(const char *name){
     write_scene_on_file(scene_cnt);
     scene_cnt++;
     return scene_cnt-1;
-}
-
-bool remove_file(String name){
-    sys_log(LOG_INFO, "Deleting file: %s", name.c_str());
-    if(LittleFS.remove(name.c_str())){
-        return true;
-    } else {
-        sys_log(LOG_ERROR, "Delete failed");
-        return false;
-    }
 }
 
 bool remove_scene(int s){
@@ -1229,16 +1335,18 @@ bool wifi_on(void){
     return true;
 }
 
-bool wifi_watchdog_cycle(void){
+bool wifi_watchdog_loop(void){
     if(millis() - wifi_watchdog_0 > WIFI_WATCHDOG_TIME){
-        if(WiFi_ok && telnet.isConnected()){
-            wifi_watchdog_0 = millis();
-            sys_log(LOG_INFO, "Wifi watchdog reset, a telnet client is conneccted.");
-        }
-        else if(WiFi_ok){
-            wifi_off();
-            sys_log(LOG_INFO, "Wifi turned off by watchdog");
-            return true;
+        if(WiFi_ok){
+            if(telnet.isConnected()){
+                wifi_watchdog_0 = millis();
+                sys_log(LOG_INFO, "Wifi watchdog reset, a telnet client is conneccted.");
+            }
+            else{
+                wifi_off();
+                sys_log(LOG_INFO, "Wifi turned off by watchdog");
+                return true;
+            }
         }
     }
     return false;
@@ -1248,34 +1356,28 @@ bool run_pid_test(){
     float alt = 0.0, azi=0.0;
 
     motor_driver_enable();
-    alt_setpoint = 0.0;
-    azi_setpoint = 0.0;
-    start_pid();
+    set_pid_goto(0., 0.);
     while(alt_PID_enabled || azi_PID_enabled) pid_loop();
 
     for(alt = 0.0; alt < 360.; alt += 10.){
         telnet.printf("Going to ALT %f\n", alt);
-        alt_setpoint = alt;
-        start_pid();
+        set_pid_goto(alt, 0.);
         while(alt_PID_enabled || azi_PID_enabled) pid_loop();
         telnet.printf("Done\n");
     }
     telnet.print("Going to ALT 0.0\n");
-    alt_setpoint = 0.;
-    start_pid();
+    set_pid_goto(0., 0.);
     while(alt_PID_enabled || azi_PID_enabled) pid_loop();
     telnet.printf("Done\n");
 
     for(azi = 0.0; azi < 360.; azi += 10.){
         telnet.printf("Going to ALT %f\n", azi);
-        azi_setpoint = azi;
-        start_pid();
+        set_pid_goto(0., azi);
         while(alt_PID_enabled || azi_PID_enabled) pid_loop();
         telnet.printf("Done\n");
     }
     telnet.print("Going to AZI 0.0\n");
-    azi_setpoint = 0.;
-    start_pid();
+    set_pid_goto(0., 0.);
     while(alt_PID_enabled || azi_PID_enabled) pid_loop();
     telnet.printf("Done\n");
 
@@ -1303,19 +1405,36 @@ bool cmd_system_status(void){
     return RTC_ok && internal_RTC_ok && external_ADC_ok;
 }
 void sleep_for_seconds(uint32_t tts){
+    uint32_t t0 = millis();
     if(tts > MAX_SLEEP_S) tts = MAX_SLEEP_S;
-    float t0 = get_timestamp_RTC();
+    sys_log(LOG_INFO, "Going to sleep for %d senonds.", tts);
+
     motor_driver_enable();
-    alt_setpoint = 270.;
-    azi_setpoint = 0.;
-    start_pid();
+    set_pid_goto(270., 0.);
     while(alt_PID_enabled || azi_PID_enabled) pid_loop();
     motor_driver_disable();
     /*Go in sleep here*/
     wifi_off();
-    uint64_t dt = (uint64_t) ((get_timestamp_RTC() - t0) * 1000000.0F);
+    Serial.flush();
+    delay(100);
+    uint64_t dt = (uint64_t) (millis() - t0) * 1000ULL;
     esp_sleep_enable_timer_wakeup(tts * 1000000ULL - dt);
     esp_deep_sleep_start();
+}
+
+void sleep_loop(void){
+    if(WiFi_ok){
+        sys_log(LOG_DEBUG, "Not going to sleep waiting for WiFi to be turned off by the watchdog.");
+        return;
+    }
+
+    float next_schedule = seconds_to_next_schedule();
+    sys_log(LOG_DEBUG, "Next schedule %f (%f).", next_schedule, 1.2*SLEEP_TIME_S);
+    if(next_schedule < 1.2*SLEEP_TIME_S){
+        if(next_schedule < 2.0 * WAKEUP_TIME_BEFORE_SCHEDULE_S) return;
+        else sleep_for_seconds((uint32_t) next_schedule - WAKEUP_TIME_BEFORE_SCHEDULE_S);
+    }
+    else sleep_for_seconds(SLEEP_TIME_S);
 }
 
 // Telnet Shell commands
@@ -1595,45 +1714,8 @@ bool cmd_test_motor2(int8_t speed){
     return true;
 }
 
-//TODO: Remove
-bool cmd_alt_pid_setpoint(char *buf){
-    float dest;
-    char outm[256];
-    sscanf(buf, "%f", &dest);
-    alt_setpoint = dest;
-    sprintf(outm, "GOING TO ALT %.4f\n", dest);
-    telnet.print(outm);
-    manual_control_enabled = true;
-    alt_PID_enabled = true;
-
-    return true;
-}
-//TODO: Remove
-bool cmd_azi_pid_setpoint(char *buf){
-    float dest;
-    char outm[256];
-    sscanf(buf, "%f", &dest);
-    azi_setpoint = dest;
-    sprintf(outm, "GOING TO AZI %.4f\n", dest);
-    telnet.print(outm);
-    manual_control_enabled = true;
-    azi_PID_enabled = true;
-
-    return true;
-}
-//TODO: Remove
-bool cmd_alt_pid_disable(void){
-    alt_PID_enabled = false;
-    alt_motor_standby();
-
-    return true;
-}
-
 bool cmd_control_reset(void){
-    solar_control_enabled = false;
-    manual_control_enabled = false;
-    azi_PID_enabled = false;
-    alt_PID_enabled = false;
+    pid_control_reset();
     
     return true;
 }
@@ -1642,52 +1724,10 @@ bool cmd_manual_control(char *buf){
     float azi, alt;
 
     sscanf(buf, "%f%f", &alt, &azi);
-    cmd_control_reset();
-    alt_setpoint = alt;
-    azi_setpoint = azi;
+    
+    set_pid_goto(alt, azi);
 
-    float delta_alt, delta_azi;
-    float c_alt, c_azi;
-    float est_t_alt, est_t_azi, maxt;
-    c_alt = read_alt_encoder();
-    c_azi = read_azi_encoder();
-    delta_alt = abs(c_alt-alt);
-    if(delta_alt > 180.) delta_alt -= 360;
-    delta_azi = abs(c_azi-azi);
-    if(delta_azi > 180.) delta_azi -= 360;
-    est_t_alt = delta_alt/alt_motor_max_sv;
-    est_t_azi = delta_azi/azi_motor_max_sv;
-    if(est_t_alt > est_t_azi)
-        maxt = est_t_alt;
-    else
-        maxt = est_t_azi;
-    if(maxt < 1.) maxt = 1.;
-    set_pid_watchdog(WATCHDOG_TIME_FACTOR*maxt);
-
-    /*
-    SKETCH FOR SYNC MOVE
-    float alts, azs, calt, cazi, exp_alt_t, exp_azi_t, tmov;
-    calt = read_alt_encoder();
-    cazi = read_azi_encoder();
-    exp_alt_t = abs(calt - alt) / get_float_cfg("alt_Msv");
-    exp_azi_t = abs(cazi - azi) / get_float_cfg("azi_Msv");
-    telnet.printf("ALT A %f T %f\nAZI A %f T %f\n", abs(calt - alt), exp_alt_t, abs(cazi - azi), exp_azi_t);
-    if(exp_azi_t > exp_alt_t) 
-        tmov = exp_azi_t;
-    else
-        tmov = exp_alt_t;
-    tmov *= 1.2;
-    alts = get_float_cfg("alt_ms") + abs(calt - alt)/(tmov * get_float_cfg("alt_sm") );
-    azis = get_float_cfg("azi_ms") + abs(cazi - azi)/(tmov * get_float_cfg("azi_sm") );
-    if(azis > 127) azis = 127;
-    if(alts > 127) alts = 127;
-    altPID.set_max_speed(alts);
-    aziPID.set_max_speed(azis);
-    telnet.printf("Time to move %f, azi speed %f alt speed %f\n", tmov, azis, alts );*/
     manual_control_enabled = true;
-    azi_PID_enabled = true;
-    alt_PID_enabled = true;
-
     return true;
 }
 
@@ -1815,6 +1855,7 @@ bool cmd_print_scene(char *rest){
 }
 
 bool cmd_sys_log(void){
+    //TODO sort by days
     String *fnames = list_dir("/log/");
     String s;
     for(int i=0; i < MAX_LOG_FILES; i++){
@@ -1832,6 +1873,15 @@ bool cmd_sys_log(void){
         }
         file.close();
     }
+    return true;
+}
+
+bool cmd_time_to_next_schedule(void){
+    float ttg = seconds_to_next_schedule();
+    if(ttg > 0)
+        telnet.printf("Next sheduled activity in %.0f s\n", ttg);
+    else
+        telnet.print("No next schedule.\n");
     return true;
 }
 
@@ -1895,12 +1945,6 @@ bool cmd_parse(char *buf){
     }
     else if(strcmp(tok, "azi-move") == 0){
         return cmd_azi_move(rest);
-    }
-    else if(strcmp(tok, "alt-pid-setpoint") == 0){
-        return cmd_alt_pid_setpoint(rest);
-    }
-    else if(strcmp(tok, "azi-pid-setpoint") == 0){
-        return cmd_azi_pid_setpoint(rest);
     }
     else if(strcmp(tok, "pid-vals") == 0){
         return cmd_pid_vals();
@@ -1967,6 +2011,9 @@ bool cmd_parse(char *buf){
     }    
     else if(strcmp(tok, "syslog") == 0){
         return cmd_sys_log();
+    }  
+    else if(strcmp(tok, "next-schedule") == 0){
+        return cmd_time_to_next_schedule();
     }  
     else{
         return cmd_err(tok);
@@ -2179,7 +2226,10 @@ void setup() {
 
     // Serial communication
     Serial.begin(9600);
+    setup_i2c();
+    setup_rtc();
     setup_littlefs();
+    cleanup_syslog();
 
     sys_log(LOG_INFO, "This is heligraph %012x", chip_id);
     sys_log(LOG_INFO, "Bootnumber %d", bootn);
@@ -2190,11 +2240,11 @@ void setup() {
     load_scenes_from_file();
     load_schedule_from_file("/schedules/wifi.sch");
 
-    setup_i2c();
+
 
     // TODO comment this line in production
-    if(true){
-    //if(bootn == 0){
+    if(bootn == 0 || !RTC_ok){
+        if(!RTC_ok) sys_log(LOG_WARNING, "Attempting WiFi connection to syncronize RTC.");
         setup_wifi();
     }
     else{
@@ -2205,7 +2255,6 @@ void setup() {
     setup_adc();
     if(external_ADC_ok) setup_motors();
     motor_driver_enable();
-    setup_rtc();
     if(WiFi_ok && NTP_ok && RTC_ok) sync_RTC_from_NTP();
     if(RTC_ok) sync_internal_rtc();
     if(!RTC_ok && NTP_ok) sync_internal_rtc_from_NTP();
@@ -2214,13 +2263,20 @@ void setup() {
     if(WiFi_ok) setup_telnet();
     reset_pid_watchdog();
     set_float_cfg("bootn", 1.0 + (float) bootn);
+
+    if(!check_time()){
+        sys_log(LOG_ERROR, "No time information is available. Sleeping until I now what time is it.");
+        sleep_for_seconds(MAX_SLEEP_S);
+    }
 }
 
 void loop() {
+    sys_log(LOG_DEBUG, "Running main loop");
+    sleep_loop();
     if(WiFi_ok) telnet.loop();
     schedule_task_loop();
-    wifi_watchdog_cycle();
-
+    wifi_watchdog_loop();
+    delay(250);
     // TODO improve
     check_external_ADC();
     if(!external_ADC_ok){
@@ -2236,6 +2292,7 @@ void loop() {
         if(!azi_PID_enabled && !alt_PID_enabled){
             manual_control_enabled = false;
             solar_control_enabled = false;
+            reset_pid_watchdog();
         }
     }
 }
