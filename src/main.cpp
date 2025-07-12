@@ -10,7 +10,7 @@ bool WiFi_ok = false;
 //WiFiClient Controller;
 ESPTelnet telnet;
 
-uint32_t chip_id;
+uint32_t chip_id, bootn;
 
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP);
@@ -76,8 +76,6 @@ float sun[3];
 float mir[3];
 float ory[3];
 float ory_alt = 0.0, ory_azi = 0.0;
-
-int bootn = 0;
 
 float logs[1000];
 int logs_cnt = 0;
@@ -294,6 +292,9 @@ float get_float_default_cfg(const char *k){
 
     if(strcmp(k, "overs") == 0)
         return ENCODER_OVERSAMPLING;
+
+    if(strcmp(k, "bootn") == 0)
+        return 0.0;
     return 0.0;
 }
 
@@ -301,6 +302,19 @@ float get_float_cfg(const char *k){
     if(!cfg_key_exists(k))
         HGPrefs.putFloat(k, get_float_default_cfg(k));
     return HGPrefs.getFloat(k);
+}
+
+bool set_float_cfg(const char *key, float val){
+    if(cfg_key_exists(key)){
+        HGPrefs.putFloat(key, val);
+        return true;
+    }
+    else{
+        char obuf[32];
+        sprintf(obuf, "Key %s not found.\n", key);
+        telnet.print(obuf);
+        return false;
+    }
 }
 
 // Reflection Routines
@@ -1282,16 +1296,7 @@ bool cmd_set(char *buf){
     key = strtok_r(NULL, " \n\r", &buf);
     rest = strtok_r(NULL, "\r\n", &buf);
     sscanf(rest, "%f", &val);
-    if(cfg_key_exists(key)){
-        HGPrefs.putFloat(key, val);
-        return true;
-    }
-    else{
-        char obuf[32];
-        sprintf(obuf, "Key %s not found.\n", key);
-        telnet.print(obuf);
-        return false;
-    }
+    return set_float_cfg(key, val);
 }
 
 bool cmd_get(char *buf){
@@ -2010,15 +2015,16 @@ void setup() {
     mir[_x_] = mir[_y_] = mir[_z_] = 0.;
     ory[_x_] = ory[_y_] = ory[_z_] = 0.;
 
+    setup_pref();
     chip_id = (uint32_t) ESP.getEfuseMac();
+    bootn = (uint32_t) get_float_cfg("bootn");
 
     // Serial communication
     Serial.begin(9600);
 
     Serial.printf("\nHelioGraph %012x\n", chip_id);
-    Serial.printf("Bootnumber %d\n", bootn++);
+    Serial.printf("Bootnumber %d\n", bootn);
 
-    setup_pref();
     current_lon = get_float_cfg("lon");
     current_lat = get_float_cfg("lat");
     setup_littlefs();
@@ -2026,7 +2032,15 @@ void setup() {
 
     setup_i2c();
 
-    setup_wifi();
+    // TODO comment this line in production
+    if(true){
+    //if(bootn == 0){
+        setup_wifi();
+    }
+    else{
+        WiFi.mode(WIFI_OFF);
+    }
+
     if(WiFi_ok) setup_ntp();
     setup_adc();
     if(external_ADC_ok) setup_motors();
@@ -2039,17 +2053,7 @@ void setup() {
 
     if(WiFi_ok) setup_telnet();
     reset_pid_watchdog();
-
-    /*Just for testing sleep mode*/
-    /*delay(1000);
-    motor_driver_enable();
-    alt_setpoint = 0.;
-    azi_setpoint = 0.;
-    azi_PID_enabled = true;
-    alt_PID_enabled = true;
-
-    while(azi_PID_enabled || alt_PID_enabled) pid_loop();
-    motor_driver_disable();*/
+    set_float_cfg("bootn", 1.0 + (float) bootn);
 }
 
 void loop() {
