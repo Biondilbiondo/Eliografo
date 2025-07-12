@@ -37,10 +37,15 @@ bool external_ADC_ok = false;
 Preferences HGPrefs; 
 
 // Daily Tasks
-#define MAX_DAILY_TASKS 32
+#define MAX_DAILY_TASKS 256
 #define SCH_TIME_DEL 1
+#define NO_TASK 0
+#define WIFI_TASK 1
+#define SEQUENCE_TASK 2
+
 uint64_t sch_timestamp[MAX_DAILY_TASKS];
 bool sch_run[MAX_DAILY_TASKS] = {false};
+uint8_t sch_type[MAX_DAILY_TASKS] = {NO_TASK};
 uint32_t task_cnt = 0;
 
 // Scene variables
@@ -207,11 +212,58 @@ void get_time(uint16_t *year, uint8_t *month, uint8_t *day, uint8_t *hours, uint
 }
 
 // Scheduled tasks
-void add_scheduled_task(uint32_t h, uint32_t m, uint32_t s){
+/*void add_scheduled_task(uint32_t h, uint32_t m, uint32_t s){
     if(task_cnt < MAX_DAILY_TASKS){
         sch_timestamp[task_cnt] = h * 3600 + m * 60 + s;
         task_cnt++;
     }
+}*/
+void add_scheduled_task_wifi(uint32_t h, uint32_t m, uint32_t s){
+    if(task_cnt < MAX_DAILY_TASKS){
+        sch_timestamp[task_cnt] = h * 3600 + m * 60 + s;
+        sch_type[task_cnt] = WIFI_TASK;
+        task_cnt++;
+    }
+}
+
+bool load_schedule_from_file(const char *path){
+    String s;
+    char cs[1024];
+    char *tok;
+    Serial.printf("Reading file: %s\r\n", path);
+
+    File file = LittleFS.open(path);
+    if(!file || file.isDirectory()){
+        Serial.println("- failed to open file for reading");
+        return false;
+    }
+
+    Serial.println("- read from file:");
+    int i = 0;
+    uint32_t h, m, sec;
+    uint8_t type;
+
+    while(file.available()){
+        s = file.readStringUntil('\n');
+        strcpy(cs, s.c_str());
+        tok = strtok(cs, " ");
+        sscanf(tok, "%d", &h);
+        tok = strtok(NULL, " ");
+        sscanf(tok, "%d", &m);
+        tok = strtok(NULL, " ");
+        sscanf(tok, "%d", &sec);
+
+        tok = strtok(NULL, " ");
+        sscanf(tok, "%d", &m);
+        if(strcmp(tok, "wifi") == 0){
+            type = WIFI_TASK;
+            add_scheduled_task_wifi(h, m, sec);
+            Serial.printf("Added wifi task at %02d:%02d:%02d\n", h, m, sec);
+        }
+        i++;
+    }
+    file.close();
+    return true;
 }
 
 void schedule_task_loop(void){
@@ -234,7 +286,9 @@ void schedule_task_loop(void){
         if(abs(timestamp - (float) sch_timestamp[i]) < SCH_TIME_DEL){
             /*telnet.print("Running daily task\n");
             telnet.printf("%02d at %02d:%02d:%02d\n", i, hours, minutes, (int) seconds);*/
-            wifi_on();
+            if(sch_type[i] == WIFI_TASK){
+                wifi_on();
+            }
             sch_run[i] = true;
         }   
     }
@@ -1611,14 +1665,6 @@ bool cmd_azi_move(char *buf){
     return true;
 }
 
-bool cmd_add_schedule(char *buf){
-    int h, m, s;
-
-    sscanf(buf, "%d%d%d", &h, &m, &s);
-    add_scheduled_task(h, m, s);
-    return true;
-}
-
 bool cmd_ls(char *buf){
     String *fnames = list_dir(buf);
     if(fnames == NULL){
@@ -1777,9 +1823,6 @@ bool cmd_parse(char *buf){
     }
     else if(strcmp(tok, "status") == 0){
         return cmd_system_status();
-    }
-    else if(strcmp(tok, "scheduled-task") == 0){
-        return cmd_add_schedule(rest);
     }
     else if(strcmp(tok, "ls") == 0){
         return cmd_ls(rest);
@@ -2044,6 +2087,7 @@ void setup() {
     current_lat = get_float_cfg("lat");
     setup_littlefs();
     load_scenes_from_file();
+    load_schedule_from_file("/schedules/wifi.sch");
 
     setup_i2c();
 
@@ -2082,8 +2126,6 @@ void loop() {
         motor_driver_disable();
         return;
     }
-    //---
-
     
     if(manual_control_enabled || solar_control_enabled){
         if(solar_control_enabled){
