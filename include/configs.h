@@ -1,8 +1,5 @@
 #ifndef _CONFIG_H_
 #define _CONFIG_H_
-#define WIFI_SSID "GraziePerIlPesce2.4"
-#define WIFI_PASSWORD "DouglasRules"
-#define UTC_OFFSET (+1)
 
 #define TELNET_PORT 23
 

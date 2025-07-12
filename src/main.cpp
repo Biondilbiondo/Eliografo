@@ -2,8 +2,10 @@
 #include "configs.h"
 #include "pins.h"
 
-const char* ssid = WIFI_SSID;
-const char* password = WIFI_PASSWORD;
+#define MAX_WIFI_NETWORKS 16
+char wifi_ssids[MAX_WIFI_NETWORKS][128];
+char wifi_passwords[MAX_WIFI_NETWORKS][128];
+uint8_t wifi_net_cnt = 0;
 bool WiFi_ok = false;
 uint32_t wifi_watchdog_0;
 
@@ -379,6 +381,33 @@ void cleanup_syslog(void){
         
     }
 }
+
+// WiFi credentials
+bool load_wifi_credentials_from_file(const char *path){
+    String s;
+    char cs[1024];
+    char *tok;
+    sys_log(LOG_INFO, "Reading wifi credentials from file: %s", path);
+
+    File file = LittleFS.open(path);
+    if(!file || file.isDirectory()){
+        sys_log(LOG_ERROR, "Failed to open file for reading");
+        return false;
+    }
+
+    while(file.available() && wifi_net_cnt < MAX_WIFI_NETWORKS){
+        s = file.readStringUntil('\n');
+        strcpy(cs, s.c_str());
+        tok = strtok(cs, " ");
+        strcpy(wifi_ssids[wifi_net_cnt], tok);
+        tok = strtok(NULL, " ");
+        strcpy(wifi_passwords[wifi_net_cnt], tok);
+        wifi_net_cnt++;
+    }
+    file.close();
+    return true;
+}
+
 // Scheduled tasks
 /*void add_scheduled_task(uint32_t h, uint32_t m, uint32_t s){
     if(task_cnt < MAX_DAILY_TASKS){
@@ -539,6 +568,10 @@ float get_float_default_cfg(const char *k){
 
     if(strcmp(k, "bootn") == 0)
         return 0.0;
+    
+    if(strcmp(k, "lastnet") == 0)
+        return 0.0;
+
     return 0.0;
 }
 
@@ -2153,10 +2186,11 @@ void setup_motors(){
     alt_motor_standby();
 }
 
-void setup_wifi(){
-    WiFi.begin(ssid, password);
+bool wifi_connect(uint8_t conn_idx){
+    WiFi.begin(wifi_ssids[conn_idx], wifi_passwords[conn_idx]);
   
-    sys_log(LOG_INFO, "Attempting wifi connection.");
+    sys_log(LOG_INFO, "Attempting wifi connection to %s", wifi_ssids[conn_idx]);
+    sys_log(LOG_DEBUG, "Wifi password is %s", wifi_passwords[conn_idx]);
 #define N_WIFI_ATTEMPTS 10
     for(uint8_t i=0;i < N_WIFI_ATTEMPTS && WiFi.status() != WL_CONNECTED; i++)
     {
@@ -2171,6 +2205,25 @@ void setup_wifi(){
         WiFi_ok = false;
     }
     wifi_watchdog_0 = millis();
+    return WiFi_ok;
+}
+
+void setup_wifi(){
+    uint8_t last_wifi_net = (uint8_t) get_float_cfg("lastnet");
+    if(last_wifi_net < wifi_net_cnt){
+        if(wifi_connect(last_wifi_net)) return;
+    }
+    else{
+        sys_log(LOG_WARNING, "Network with index %d is no longer available", last_wifi_net);
+    }
+    
+    sys_log(LOG_INFO, "Scanning all known networks.");
+    uint8_t i;
+    for(i=0; i < wifi_net_cnt && i < MAX_WIFI_NETWORKS; i++){
+        if(i == last_wifi_net) continue;
+        if(wifi_connect(i)) break;
+    }
+    set_float_cfg("lastnet", (float) i);
 }
 
 void setup_ntp(void){
@@ -2237,6 +2290,7 @@ void setup() {
     current_lon = get_float_cfg("lon");
     current_lat = get_float_cfg("lat");
     sys_log(LOG_INFO, "My Position is LON %.3f LAT %.3f", current_lon, current_lat);
+    load_wifi_credentials_from_file("/wifi_net.txt");
     load_scenes_from_file();
     load_schedule_from_file("/schedules/wifi.sch");
 
