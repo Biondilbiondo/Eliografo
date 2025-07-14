@@ -46,11 +46,14 @@ Preferences HGPrefs;
 #define NO_TASK 0
 #define WIFI_TASK 1
 #define SEQUENCE_TASK 2
+#define MAX_SCENES_IN_SEQUENCE 64
 
 uint64_t sch_timestamp[MAX_DAILY_TASKS];
 bool sch_run[MAX_DAILY_TASKS] = {false};
 uint8_t sch_type[MAX_DAILY_TASKS] = {NO_TASK};
 uint32_t task_cnt = 0;
+uint8_t sch_sequence[MAX_DAILY_TASKS][MAX_SCENES_IN_SEQUENCE] = {0};
+uint8_t sch_sequence_len[MAX_DAILY_TASKS] = {0};
 
 // Scene variables
 #define SCENE_LEN 120
@@ -69,7 +72,7 @@ float azi_setpoint, alt_setpoint,
       azi_encoder_val, alt_encoder_val,
       azi_motor_speed, alt_motor_speed,
       alt_encoder_zero, azi_encoder_zero;
-float pid_watchdog_t0, pid_watchdog_elap;
+uint32_t pid_watchdog_t0, pid_watchdog_elap;
 float azi_motor_min_s, azi_motor_max_sv, azi_motor_min_sv, azi_motor_m_s;
 float alt_motor_min_s, alt_motor_max_sv, alt_motor_min_sv, alt_motor_m_s;
 uint8_t encoder_oversampling = ENCODER_OVERSAMPLING;
@@ -123,8 +126,20 @@ bool sync_internal_rtc_from_NTP(void){
     return false;
 }
 
+float get_timestamp(void){
+    uint16_t year;
+    uint8_t month;
+    uint8_t day;
+    uint8_t hours;
+    uint8_t minutes;
+    float seconds;
+    get_time(&year, &month, &day, &hours, &minutes, &seconds);
+    float timestamp = (float) hours * 3600. + (float) minutes * 60. + seconds;
+    return timestamp;
+}
+
 float get_timestamp_RTC(void){
-    return (float) internal_rtc.getHour() * 3600. + (float) internal_rtc.getMinute() * 60 + internal_rtc.getSecond() + internal_rtc.getMicros() / 1e6;
+    return (float) internal_rtc.getHour(true) * 3600. + (float) internal_rtc.getMinute() * 60 + internal_rtc.getSecond() + internal_rtc.getMicros() / 1e6;
 }
 
 void get_time_RTC(uint16_t *year, uint8_t *month, uint8_t *day, uint8_t *hours, uint8_t *minutes, float *seconds){
@@ -416,18 +431,29 @@ bool load_wifi_credentials_from_file(const char *path){
 }
 
 // Scheduled tasks
-/*void add_scheduled_task(uint32_t h, uint32_t m, uint32_t s){
-    if(task_cnt < MAX_DAILY_TASKS){
-        sch_timestamp[task_cnt] = h * 3600 + m * 60 + s;
-        task_cnt++;
-    }
-}*/
-void add_scheduled_task_wifi(uint32_t h, uint32_t m, uint32_t s){
+bool add_scheduled_task_wifi(uint32_t h, uint32_t m, uint32_t s){
+
     if(task_cnt < MAX_DAILY_TASKS){
         sch_timestamp[task_cnt] = h * 3600 + m * 60 + s;
         sch_type[task_cnt] = WIFI_TASK;
         task_cnt++;
+        return true;
     }
+    return false;
+}
+
+bool add_scheduled_task_sequence(uint32_t h, uint32_t m, uint32_t s, uint8_t *seq, uint8_t seq_len){
+    if(task_cnt < MAX_DAILY_TASKS){
+        sch_timestamp[task_cnt] = h * 3600 + m * 60 + s - SAFETY_TIME_BEFORE_SEQUENCE;
+        sch_type[task_cnt] = SEQUENCE_TASK;
+        for(int i=0; i < seq_len && i < MAX_SCENES_IN_SEQUENCE; i++){
+            sch_sequence[task_cnt][i] = seq[i];
+        }
+        sch_sequence_len[task_cnt] = seq_len;
+        task_cnt++;
+        return true;
+    }
+    return false;
 }
 
 bool load_schedule_from_file(const char *path){
@@ -463,6 +489,39 @@ bool load_schedule_from_file(const char *path){
             add_scheduled_task_wifi(h, m, sec);
             sys_log(LOG_INFO, "Added wifi task at %02d:%02d:%02d", h, m, sec);
         }
+        else if(strcmp(tok, "sequence") == 0){
+            type = SEQUENCE_TASK;
+            uint8_t myseq[MAX_SCENES_IN_SEQUENCE] = {0};
+            uint8_t seq_len = 0;
+            char *next_scene_name;
+            bool error = false;
+
+            next_scene_name = strtok(NULL, " ");
+            while(next_scene_name != NULL){
+                String nsn = String(next_scene_name);
+                int j;
+                for(j=0; j < scene_cnt; j++){
+                    if(nsn == scenes_name[j]){
+                        myseq[seq_len++] = j;
+                        break;
+                    }
+                }
+                if(j == scene_cnt){
+                    error = true;
+                    sys_log(LOG_ERROR, "Error while parsing line \"%s\" in file %s.", s.c_str(), path);
+                    sys_log(LOG_ERROR, "Scene \"%s\" not found.", nsn);
+                }
+                next_scene_name = strtok(NULL, " ");
+            }
+            if(!error){
+                add_scheduled_task_sequence(h, m, sec, myseq, seq_len);
+                sys_log(LOG_INFO, "Added sequence task at %02d:%02d:%02d (it will be scheduled %d'%d\" before)", 
+                        h, m, sec, (int) SAFETY_TIME_BEFORE_SEQUENCE/60, (int) SAFETY_TIME_BEFORE_SEQUENCE%60 );
+            }
+        }
+        else{
+            sys_log(LOG_ERROR, "Error while parsing line \"%s\" in file %s.", s.c_str(), path);
+        }
         i++;
     }
     file.close();
@@ -470,14 +529,9 @@ bool load_schedule_from_file(const char *path){
 }
 
 void schedule_task_loop(void){
-    uint16_t year;
-    uint8_t month;
-    uint8_t day;
-    uint8_t hours;
-    uint8_t minutes;
-    float seconds;
-    get_time(&year, &month, &day, &hours, &minutes, &seconds);
-    float timestamp = hours * 3600 + minutes * 60 + seconds;
+    float timestamp = get_timestamp();
+    bool was_on_wifi = false;
+
     for(int i=0; i<task_cnt; i++){
         if(sch_run[i]){ 
             // Reload
@@ -493,6 +547,23 @@ void schedule_task_loop(void){
                 sys_log(LOG_INFO, "WiFi turned on by task number %d", i);
                 sys_log(LOG_DEBUG, "Timestamp %f schedule timestamp %f", timestamp, (float) sch_timestamp[i]);
                 wifi_on();
+            }
+            if(sch_type[i] == SEQUENCE_TASK){
+                sys_log(LOG_INFO, "Starting sequence task %d right now", i);
+                sys_log(LOG_DEBUG, "Timestamp %f schedule timestamp %f", timestamp, (float) sch_timestamp[i]);
+                if(WiFi_ok){
+                    if(telnet.isConnected()){
+                        telnet.printf("Sorry but a sequence is starting right now, you can reconnect at the end.");
+                        telnet.disconnectClient();
+                    }
+                    wifi_off();
+                    was_on_wifi = true;
+                }
+                run_sequence(sch_sequence[i], sch_sequence_len[i], (float) sch_timestamp[i] + SAFETY_TIME_BEFORE_SEQUENCE);
+                if(was_on_wifi){
+                    wifi_on();
+                    wifi_watchdog_0 = millis();
+                }
             }
             sch_run[i] = true;
         }   
@@ -855,8 +926,8 @@ float read_alt_encoder(void){
 }
 
 void set_pid_watchdog(uint32_t watchdog_time_s){
-    pid_watchdog_t0 = get_timestamp_RTC();
-    pid_watchdog_elap = watchdog_time_s;
+    pid_watchdog_t0 = millis();
+    pid_watchdog_elap = watchdog_time_s*1000;
 }
 
 void reset_pid_watchdog(void){
@@ -939,7 +1010,7 @@ void set_pid_goto(float alt, float azi){
 
 void pid_loop(void){
     if(pid_watchdog_t0 > 0 && pid_watchdog_elap > 0){
-        float dt = get_timestamp_RTC() - pid_watchdog_t0;
+        uint32_t dt = millis() - pid_watchdog_t0;
         if(dt > pid_watchdog_elap || dt < 0){
             azi_motor_standby();
             alt_motor_standby();
@@ -1271,7 +1342,7 @@ bool scene_add_frame(int s, float alt, float azi){
     return write_scene_on_file(s);
 }
 
-bool run_scene(uint8_t sn, float alt_0, float azi_0){
+bool run_scene(uint8_t sn, float run_timestamp=-1., float alt_0=0., float azi_0=0.){
     //TODO watchdog 
     //TODO syncmove
     uint32_t now, next, t0, scene_beg;
@@ -1285,6 +1356,18 @@ bool run_scene(uint8_t sn, float alt_0, float azi_0){
     float delta_alt, delta_azi;
     int8_t alt_speed_i, azi_speed_i;
 
+    float current_timestamp;
+    bool wait = true;
+
+    current_timestamp = get_timestamp_RTC();
+    //sys_log(LOG_DEBUG, "Running scene %d %s", sn, scenes_name[sn]);
+    //sys_log(LOG_DEBUG, "Current timestamp %.1f, run timestamp %.1f", current_timestamp, run_timestamp);
+    if(run_timestamp < 0 || current_timestamp > run_timestamp){
+        // Run immediately
+        wait = false;
+        //sys_log(LOG_DEBUG, "I don't have to wait!");
+    }
+
     motor_driver_enable();
     //ray_to_setpoints(scenes[sn][0]+alt_0, scenes[sn][1]+azi_0);
     alt_setpoint = scenes[sn][0]+alt_0;
@@ -1292,6 +1375,14 @@ bool run_scene(uint8_t sn, float alt_0, float azi_0){
     start_pid();
     while(alt_PID_enabled || azi_PID_enabled) pid_loop();
     //telnet.print("Initial position\n");
+    if(wait){
+        do{
+            current_timestamp = get_timestamp_RTC();
+            //sys_log(LOG_DEBUG, "Current timestamp %.1f, run timestamp %.1f", current_timestamp, run_timestamp);
+            delay(10);
+        }while(run_timestamp > current_timestamp);
+    }
+    sys_log(LOG_INFO, "Scene started at %.1f (required %.1f)", current_timestamp, run_timestamp);
 
     now = millis();
     scene_beg = now;
@@ -1315,7 +1406,7 @@ bool run_scene(uint8_t sn, float alt_0, float azi_0){
             azi_speed_i = compute_speed(delta_azi, dt, azi_min_speed, azi_max_speed);
             //telnet.printf("dt = %d\n", dt);
             //telnet.printf("alt %f azi %f \n", delta_alt, delta_azi);
-            telnet.printf("speeds %d %d\n",alt_speed_i, azi_speed_i);
+            //telnet.printf("speeds %d %d\n",alt_speed_i, azi_speed_i);
 
             set_alt_motor_speed(alt_speed_i);
             set_azi_motor_speed(azi_speed_i);
@@ -1324,7 +1415,7 @@ bool run_scene(uint8_t sn, float alt_0, float azi_0){
         }
 
         if(now >= next){
-            telnet.printf("END DALT %f DAZI %f\n", delta_alt, delta_azi);
+            //telnet.printf("END DALT %f DAZI %f\n", delta_alt, delta_azi);
 
             alt_setpoint = scenes[sn][i*2]+alt_0;
             azi_setpoint = scenes[sn][i*2+1]+azi_0;
@@ -1337,8 +1428,8 @@ bool run_scene(uint8_t sn, float alt_0, float azi_0){
             azi_max_speed = compute_speed(compute_angle_delta(azi_setpoint, azi_encoder_val)*(1.+speed_range), SCENE_DT);
             azi_min_speed = compute_speed(compute_angle_delta(azi_setpoint, azi_encoder_val)*(1.-speed_range), SCENE_DT);
 
-            telnet.printf("ALT %d %d %d\n", alt_min_speed, alt_target_speed, alt_max_speed);
-            telnet.printf("AZI %d %d %d\n", azi_min_speed, azi_target_speed, azi_max_speed);
+            //telnet.printf("ALT %d %d %d\n", alt_min_speed, alt_target_speed, alt_max_speed);
+            //telnet.printf("AZI %d %d %d\n", azi_min_speed, azi_target_speed, azi_max_speed);
             
             set_alt_motor_speed(alt_target_speed);
             set_azi_motor_speed(azi_target_speed);
@@ -1347,7 +1438,7 @@ bool run_scene(uint8_t sn, float alt_0, float azi_0){
             next = scene_beg + SCENE_DT * (i+1);
             //start_pid();
             i++;
-            telnet.printf("STEP %d\n", i);
+            //telnet.printf("STEP %d\n", i);
         }
         //pid_loop();
     }
@@ -1358,11 +1449,44 @@ bool run_scene(uint8_t sn, float alt_0, float azi_0){
 
     altPID.set_max_speed(127);
     aziPID.set_max_speed(127);*/
-    telnet.printf("Scene ended after %f\n", 1e-3*(millis()-scene_beg));
+    sys_log(LOG_INFO, "Scene ended after %.1f s (expected %.1f)\n", 1e-3*(millis()-scene_beg), 1e-3*SCENE_DT*(scene_len[sn]-1));
 
     azi_motor_standby();
     alt_motor_standby();
-    motor_driver_disable();
+    return true;
+}
+
+bool run_sequence(uint8_t *scenes_seq, uint8_t sequence_len, float run_timestamp){
+    float current_timestamp;
+    bool wait = true;
+    current_timestamp = get_timestamp_RTC();
+    if(run_timestamp < 0 || current_timestamp < run_timestamp - SAFETY_TIME_BEFORE_FIRST_SCENE ){
+        // Run immediately
+        wait = false;
+    }
+
+    motor_driver_enable();
+    if(wait){
+        while(run_timestamp - SAFETY_TIME_BEFORE_FIRST_SCENE > current_timestamp){
+            current_timestamp = get_timestamp_RTC();
+            delay(10);
+        }
+    }
+
+    uint32_t expected_time = 0;
+    for(uint8_t i=0; i < sequence_len && i < MAX_SCENES_IN_SEQUENCE; i++){
+        if(i==0){
+            run_scene(scenes_seq[0], run_timestamp);
+        }
+        else{
+            run_scene(scenes_seq[i]);
+        }
+        expected_time += (scene_len[scenes_seq[i]] - 1) * SCENE_DT;
+    }
+    current_timestamp = get_timestamp_RTC();
+
+    sys_log(LOG_INFO, "Scene start time %.1f, scene end %.1f, elapsed %.1f (expected) %.1f\n", 
+            run_timestamp, current_timestamp, current_timestamp-run_timestamp, 1.0*expected_time/1000);
     return true;
 }
 
@@ -1497,12 +1621,12 @@ void sleep_for_seconds(uint32_t tts){
 
 void sleep_loop(void){
     if(WiFi_ok){
-        sys_log(LOG_DEBUG, "Not going to sleep waiting for WiFi to be turned off by the watchdog.");
+        //sys_log(LOG_DEBUG, "Not going to sleep waiting for WiFi to be turned off by the watchdog.");
         return;
     }
 
     float next_schedule = seconds_to_next_schedule();
-    sys_log(LOG_DEBUG, "Next schedule %f (%f).", next_schedule, 1.2*SLEEP_TIME_S);
+    //sys_log(LOG_DEBUG, "Next schedule %f (%f).", next_schedule, 1.2*SLEEP_TIME_S);
     if(next_schedule < 1.2*SLEEP_TIME_S){
         if(next_schedule < 2.0 * WAKEUP_TIME_BEFORE_SCHEDULE_S) return;
         else sleep_for_seconds((uint32_t) next_schedule - WAKEUP_TIME_BEFORE_SCHEDULE_S);
@@ -1576,7 +1700,9 @@ bool cmd_time(void){
     get_time_internal_RTC(&y, &m, &d, &h, &mi, &s);
     sprintf(buf, "%04d-%02d-%02dT%02d:%02d:%06.4fZ\n", y, m, d, h, mi, s);
     telnet.print(buf);
-    sprintf(buf, "TIMESTAMP %f\n", get_timestamp_RTC());
+    sprintf(buf, "TIMESTAMP RTC %f\n", get_timestamp_RTC());
+    telnet.print(buf);
+    sprintf(buf, "TIMESTAMP DEFAULT %f\n", get_timestamp());
     telnet.print(buf);
     return true;
 }
@@ -2040,7 +2166,11 @@ bool cmd_parse(char *buf){
         return cmd_driver_off();
     }
     else if(strcmp(tok, "test-scene") == 0){
-        return run_scene(0, 0., 0.);
+        return run_scene(0);
+    }
+    else if(strcmp(tok, "test-sequence") == 0){
+        uint8_t myseq[] = {0, 1, 0};
+        return run_sequence(myseq, 3, -1);
     }
     else if(strcmp(tok, "sleep") == 0){
         return cmd_sleep(rest);
@@ -2328,6 +2458,7 @@ void setup() {
     sys_log(LOG_INFO, "My Position is LON %.3f LAT %.3f", current_lon, current_lat);
     load_wifi_credentials_from_file("/wifi_net.txt");
     load_scenes_from_file();
+    load_schedule_from_file("/schedules/show.sch");
     load_schedule_from_file("/schedules/wifi.sch");
 
     //if(true){
@@ -2341,10 +2472,23 @@ void setup() {
         WiFi.mode(WIFI_OFF);
     }
 
-    if(WiFi_ok) setup_ntp();
-    if(WiFi_ok && NTP_ok && RTC_ok) sync_RTC_from_NTP();
-    if(RTC_ok) sync_internal_rtc();
-    if(!RTC_ok && NTP_ok) sync_internal_rtc_from_NTP();
+    if(WiFi_ok){
+        setup_ntp();
+        sys_log(LOG_INFO, "NTP connected");
+    }
+    if(WiFi_ok && NTP_ok && RTC_ok){
+        sync_RTC_from_NTP();
+        sys_log(LOG_INFO, "External RTC synced with NTP");
+    }
+    if(RTC_ok){
+        sync_internal_rtc();
+        sys_log(LOG_INFO, "Internal RTC synced with external RTC");
+    }
+    if(!RTC_ok && NTP_ok){
+        sync_internal_rtc_from_NTP();
+        sys_log(LOG_INFO, "Internal RTC synced with NTP");
+    }
+    sys_log(LOG_DEBUG, "Default timestamp %.1f, internal timestamp %.1f");
 
     if(WiFi_ok) setup_telnet();
 
@@ -2364,7 +2508,7 @@ void setup() {
 }
 
 void loop() {
-    sys_log(LOG_DEBUG, "Running main loop");
+    //sys_log(LOG_DEBUG, "Running main loop");
     sleep_loop();
     if(WiFi_ok) telnet.loop();
     schedule_task_loop();

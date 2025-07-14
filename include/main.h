@@ -82,4 +82,6 @@ void alt_motor_enable(void);
 float read_azi_encoder(void);
 float read_alt_encoder(void);
 
+bool run_sequence(uint8_t *scenes_seq, uint8_t sequence_len, float run_timestamp);
+
 void IRAM_ATTR PID_isr(void);
