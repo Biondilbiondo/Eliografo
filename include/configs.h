@@ -11,11 +11,11 @@
 //#define USE_MPU6050
 #define USE_GY271
 
-#define DEFAULT_AZI_KP 40.
+#define DEFAULT_AZI_KP 10.
 #define DEFAULT_AZI_KD 0.
 #define DEFAULT_AZI_KI 0.
 
-#define DEFAULT_ALT_KP 40.
+#define DEFAULT_ALT_KP 10.
 #define DEFAULT_ALT_KD 0.
 #define DEFAULT_ALT_KI 0.
 
@@ -26,8 +26,8 @@
 #define ENCODER_OVERSAMPLING 1
 #define DEFAULT_ALT_ENCODER_ZERO 0.0
 #define DEFAULT_AZI_ENCODER_ZERO 0.0
-#define DEFAULT_ALT_MIN_E 0.0
-#define DEFAULT_AZI_MIN_E 0.0
+#define DEFAULT_ALT_MIN_E 1.0
+#define DEFAULT_AZI_MIN_E 1.0
 // in deg/sec 
 #define MIN_ALLOWED_SPEED .1
 #define WATCHDOG_TIME_FACTOR 3.

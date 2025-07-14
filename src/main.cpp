@@ -1,4 +1,6 @@
 #include "main.h"
+//#include "driver/periph_ctrl.h"
+//#include "driver/rtc_io.h"
 #include "configs.h"
 #include "pins.h"
 
@@ -225,7 +227,10 @@ bool check_time(void){
     uint8_t m, d, h, min;
     float s;
     get_time(&y, &m, &d, &h, &min, &s);
-    if(y < 2025) return false;
+#define SAFETY_MIN_YEAR 2025
+#define SAFETY_MAX_YEAR 2030
+    if(y < SAFETY_MIN_YEAR) return false;
+    if(y > SAFETY_MAX_YEAR) return false;
     return true;
 }
 
@@ -236,7 +241,8 @@ bool check_time(void){
 #define LOG_ERROR 0 
 
 #define MAX_LOG_FILES 120
-#define LOG_DELETE_AFTER_DAYS 2
+// Delete a log file after number of days, -1 to keep everything
+#define LOG_DELETE_AFTER_DAYS -1
 #define LOG_LEVEL LOG_INFO
 #define SERIAL_LOG_ENABLED
 #define LITTLEFS_LOG_ENABLED
@@ -289,7 +295,7 @@ void sys_log(uint8_t type, const char *format, ...)
             dc = '?';
     }
 
-    sprintf(header, "[%04d-%02d-%02d %02d:%02d:%04.1f][%c] ", y, m, d, h, min, s, dc);
+    sprintf(header, "[%04d-%02d-%02d %02d:%02d:%04.1f BN %05d][%c] ", y, m, d, h, min, s, bootn, dc);
 
 #ifdef SERIAL_LOG_ENABLED
         Serial.printf("%s %s\n", header, temp);
@@ -366,6 +372,7 @@ void cleanup_syslog(void){
     float sec;
     
     uint32_t today, log_date;
+    if(LOG_DELETE_AFTER_DAYS < 0) return;
     get_time(&y, &m, &d, &h, &min, &sec);
     today = days_since_epoch((int) y, (int) m, (int) d);
     for(int i=0; i < MAX_LOG_FILES; i++){
@@ -665,15 +672,17 @@ void update_sun_vec(void){
 
 // Motors and Encoders Routine
 void motor_driver_enable(void){
-    driver_on = true;
-    digitalWrite(DRIVER_ENABLE, LOW);
-    // time for the 5V to stabilize
-    delay(1000);
+    if(!driver_on){
+        driver_on = true;
+        digitalWrite(DRIVER_ENABLE, HIGH);
+    }
 }
 
 void motor_driver_disable(void){
-    driver_on = false;
-    digitalWrite(DRIVER_ENABLE, HIGH);
+    if(driver_on){
+        driver_on = false;
+        digitalWrite(DRIVER_ENABLE, LOW);
+    }
 }
 
 void set_alt_motor_speed(int8_t speed){
@@ -769,9 +778,9 @@ void alt_motor_enable(void){
 
 void check_external_ADC(void){
     byte error, address;
-    Wire.beginTransmission(0x48);
+    Wire.beginTransmission(ADS1X15_ADDRESS);
     error = Wire.endTransmission();
-    if (error == 0) {
+    if(error == 0) {
         external_ADC_ok = true;
     }
     else{
@@ -845,18 +854,6 @@ float read_alt_encoder(void){
     return deg; // Just to put something here
 }
 
-void pid_control_reset(void){
-    solar_control_enabled = false;
-    manual_control_enabled = false;
-    azi_PID_enabled = false;
-    alt_PID_enabled = false;
-}
-
-void start_pid(void){
-    alt_PID_enabled = true;
-    azi_PID_enabled = true;
-}
-
 void set_pid_watchdog(uint32_t watchdog_time_s){
     pid_watchdog_t0 = get_timestamp_RTC();
     pid_watchdog_elap = watchdog_time_s;
@@ -865,6 +862,27 @@ void set_pid_watchdog(uint32_t watchdog_time_s){
 void reset_pid_watchdog(void){
     pid_watchdog_t0 = -1;
     pid_watchdog_elap = -1;
+}
+
+void pid_control_reset(void){
+    if(!external_ADC_ok) return;
+
+    solar_control_enabled = false;
+    manual_control_enabled = false;
+    azi_PID_enabled = false;
+    alt_PID_enabled = false;
+
+    azi_encoder_val = read_azi_encoder();
+    alt_encoder_val = read_alt_encoder();
+    azi_setpoint = azi_encoder_val;
+    alt_setpoint = alt_encoder_val;
+
+    reset_pid_watchdog();
+}
+
+void start_pid(void){
+    alt_PID_enabled = true;
+    azi_PID_enabled = true;
 }
 
 #define GAIN 3.5
@@ -1437,6 +1455,25 @@ bool cmd_system_status(void){
 
     return RTC_ok && internal_RTC_ok && external_ADC_ok;
 }
+
+void deep_sleep_hold_start(void){
+    //gpio_hold_en((gpio_num_t)ALT_MOTOR_PWM);
+    //gpio_hold_en((gpio_num_t)AZI_MOTOR_PWM);
+    //gpio_hold_en((gpio_num_t)I2C_SCL);
+    //gpio_hold_en((gpio_num_t)I2C_SDA);
+    gpio_hold_en((gpio_num_t)DRIVER_ENABLE);
+    gpio_deep_sleep_hold_en();
+}
+
+void deep_sleep_hold_stop(void){
+    /*gpio_hold_dis((gpio_num_t)ALT_MOTOR_PWM);
+    gpio_hold_dis((gpio_num_t)AZI_MOTOR_PWM);*/
+    //gpio_hold_dis((gpio_num_t)I2C_SCL);
+    //gpio_hold_dis((gpio_num_t)I2C_SDA);
+    gpio_hold_dis((gpio_num_t)DRIVER_ENABLE);
+    gpio_deep_sleep_hold_dis();
+}
+
 void sleep_for_seconds(uint32_t tts){
     uint32_t t0 = millis();
     if(tts > MAX_SLEEP_S) tts = MAX_SLEEP_S;
@@ -1445,11 +1482,14 @@ void sleep_for_seconds(uint32_t tts){
     motor_driver_enable();
     set_pid_goto(270., 0.);
     while(alt_PID_enabled || azi_PID_enabled) pid_loop();
-    motor_driver_disable();
-    /*Go in sleep here*/
+
     wifi_off();
     Serial.flush();
-    delay(100);
+
+    motor_driver_disable();
+    
+    //deep_sleep_hold_start();
+    
     uint64_t dt = (uint64_t) (millis() - t0) * 1000ULL;
     esp_sleep_enable_timer_wakeup(tts * 1000000ULL - dt);
     esp_deep_sleep_start();
@@ -1542,6 +1582,7 @@ bool cmd_time(void){
 }
 
 bool cmd_reboot(void){
+    telnet.disconnectClient();
     ESP.restart();
     return true;
 }
@@ -1964,6 +2005,8 @@ bool cmd_parse(char *buf){
         return cmd_mirror_log();
     }
     else if(strcmp(tok, "quit") == 0){
+        //WiFi watchdog start from now
+        wifi_watchdog_0 = millis();
         telnet.disconnectClient();
         return true;
     }
@@ -2158,10 +2201,6 @@ void setup_motors(){
 
     encoder_oversampling = (uint8_t) get_float_cfg("overs");
 
-    azi_encoder_val = read_azi_encoder();
-    alt_encoder_val = read_alt_encoder();
-    azi_setpoint = azi_encoder_val;
-    alt_setpoint = alt_encoder_val;
     aziPID.set_PID_params(get_float_cfg("azi_kp"),
                           get_float_cfg("azi_ki"),
                           get_float_cfg("azi_kd"),
@@ -2175,12 +2214,6 @@ void setup_motors(){
                           get_float_cfg("alt_ms"),
                           127,
                           get_float_cfg("alt_me"));
-
-    //Interrupt
-    /*PID_timer_cfg = timerBegin(0, 40000, true);
-    timerAttachInterrupt(PID_timer_cfg, &PID_isr, true);
-    timerAlarmWrite(PID_timer_cfg, PID_INTERRUPT_MS, true);
-    timerAlarmEnable(PID_timer_cfg);*/
 
     azi_motor_standby();
     alt_motor_standby();
@@ -2279,6 +2312,10 @@ void setup() {
 
     // Serial communication
     Serial.begin(9600);
+    //deep_sleep_hold_stop();
+    setup_motors();
+    motor_driver_enable();
+
     setup_i2c();
     setup_rtc();
     setup_littlefs();
@@ -2293,11 +2330,11 @@ void setup() {
     load_scenes_from_file();
     load_schedule_from_file("/schedules/wifi.sch");
 
-
-
-    // TODO comment this line in production
-    if(bootn == 0 || !RTC_ok){
-        if(!RTC_ok) sys_log(LOG_WARNING, "Attempting WiFi connection to syncronize RTC.");
+    //if(true){
+    if(bootn == 0 || !RTC_ok || (RTC_ok && !check_time())){
+        if(!RTC_ok) sys_log(LOG_WARNING, "RTC is not working.");
+        if(RTC_ok && !check_time()) sys_log(LOG_WARNING, "RTC is working, but date is wrong.");
+        sys_log(LOG_INFO, "Attempting WiFi connection to syncronize RTC.");
         setup_wifi();
     }
     else{
@@ -2305,21 +2342,23 @@ void setup() {
     }
 
     if(WiFi_ok) setup_ntp();
-    setup_adc();
-    if(external_ADC_ok) setup_motors();
-    motor_driver_enable();
     if(WiFi_ok && NTP_ok && RTC_ok) sync_RTC_from_NTP();
     if(RTC_ok) sync_internal_rtc();
     if(!RTC_ok && NTP_ok) sync_internal_rtc_from_NTP();
-    motor_driver_disable();
 
     if(WiFi_ok) setup_telnet();
-    reset_pid_watchdog();
+
+    setup_adc();
+    if(external_ADC_ok) pid_control_reset();
+
     set_float_cfg("bootn", 1.0 + (float) bootn);
 
     if(!check_time()){
         sys_log(LOG_ERROR, "No time information is available. Sleeping until I now what time is it.");
         sleep_for_seconds(MAX_SLEEP_S);
+    }
+    if(!external_ADC_ok){
+        sys_log(LOG_ERROR, "External ADC not working, system is unable to move.");
     }
     cleanup_syslog();
 }
@@ -2330,7 +2369,7 @@ void loop() {
     if(WiFi_ok) telnet.loop();
     schedule_task_loop();
     wifi_watchdog_loop();
-    delay(250);
+
     // TODO improve
     check_external_ADC();
     if(!external_ADC_ok){
