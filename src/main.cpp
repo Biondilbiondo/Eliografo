@@ -76,6 +76,7 @@ float azi_setpoint, alt_setpoint,
 uint32_t pid_watchdog_t0, pid_watchdog_elap;
 float azi_motor_min_s, azi_motor_max_sv, azi_motor_min_sv, azi_motor_m_s;
 float alt_motor_min_s, alt_motor_max_sv, alt_motor_min_sv, alt_motor_m_s;
+float alt_encoder_volt_to_deg, azi_encoder_volt_to_deg;
 uint8_t encoder_oversampling = ENCODER_OVERSAMPLING;
 
 float current_lat, current_lon;
@@ -93,6 +94,11 @@ float ory_alt = 0.0, ory_azi = 0.0;
 
 bool littleFS_ok = false;
 
+void system_checks(void){
+    if(alt_encoder_zero <= 100 || alt_encoder_zero >= 260){
+        sys_log(LOG_WARNING, "Zero of altitude encoder is in the range ov movement and this can cause inaccuracy.");
+    }
+}
 // Time/RTC Routines
 void update_time_from_NTP(void){
     while(!timeClient.update()) {
@@ -250,18 +256,7 @@ bool check_time(void){
     return true;
 }
 
-// Logging & LittleFS
-#define LOG_DEBUG 6
-#define LOG_INFO 2
-#define LOG_WARNING 1
-#define LOG_ERROR 0 
 
-#define MAX_LOG_FILES 120
-// Delete a log file after number of days, -1 to keep everything
-#define LOG_DELETE_AFTER_DAYS -1
-#define LOG_LEVEL LOG_INFO
-#define SERIAL_LOG_ENABLED
-#define LITTLEFS_LOG_ENABLED
 void sys_log(uint8_t type, const char *format, ...)
 {
     if(LOG_LEVEL < type) return;
@@ -457,6 +452,21 @@ bool add_scheduled_task_sequence(uint32_t h, uint32_t m, uint32_t s, uint8_t *se
     return false;
 }
 
+bool delete_schedule(uint16_t s){
+    if(s >= task_cnt) return false;
+    for(int i=s+1; i < task_cnt; i++){
+        sch_timestamp[i-1] = sch_timestamp[i];
+        sch_type[i-1] = sch_type[i];
+        for(int j=0; j < MAX_SCENES_IN_SEQUENCE; j++){
+            sch_sequence[i-1][j] = sch_sequence[i][j];
+        }
+        sch_sequence_len[i-1] = sch_sequence_len[i];
+    }
+    task_cnt--;
+    return true;
+
+}
+
 bool load_schedule_from_file(const char *path){
     String s;
     char cs[1024];
@@ -642,6 +652,12 @@ float get_float_default_cfg(const char *k){
     if(strcmp(k, "alt_sm") == 0)
         return DEFAULT_M_SPEED;
 
+    if(strcmp(k, "altv2d") == 0)
+        return DEFAULT_VOLT_TO_DEG;
+
+    if(strcmp(k, "aziv2d") == 0)
+        return DEFAULT_VOLT_TO_DEG;
+
     if(strcmp(k, "overs") == 0)
         return ENCODER_OVERSAMPLING;
 
@@ -740,6 +756,17 @@ void update_sun_vec(void){
             
     get_time(&year, &month, &day, &hours, &minutes, &seconds);
     get_sun_vec(current_lon, current_lat, year, month, day, hours, minutes, seconds, sun);
+}
+
+bool is_sun_above_horizon(void){
+    update_sun_vec();
+    float alt = absolute_to_geo_alt(sun);
+    if(alt > 180)
+        alt -= 360;
+    if(alt < -180)
+        alt += 360;
+
+    return alt > 0;
 }
 
 // Motors and Encoders Routine
@@ -848,18 +875,6 @@ void alt_motor_standby(void){
     digitalWrite(ALT_MOTOR_DIR2, LOW);
 }
 
-void azi_motor_enable(void){
-    azi_encoder_val = read_alt_encoder();
-    azi_setpoint = azi_encoder_val;
-    azi_PID_enabled = true;
-}
-
-void alt_motor_enable(void){
-    alt_encoder_val = read_alt_encoder();
-    alt_setpoint = alt_encoder_val;
-    alt_PID_enabled = true;
-}
-
 void check_external_ADC(void){
     byte error, address;
     Wire.beginTransmission(ADS1X15_ADDRESS);
@@ -873,7 +888,7 @@ void check_external_ADC(void){
 }
 
 float azi_encoder_to_degrees(float val){
-    return val/2.50*360.0;
+    return val * azi_encoder_volt_to_deg;
 }
 
 float read_azi_encoder(void){
@@ -906,7 +921,7 @@ float read_azi_encoder(void){
 }
 
 float alt_encoder_to_degrees(float val){
-    return val/2.50 * 360.0;
+    return val * alt_encoder_volt_to_deg;
 }
 
 float read_alt_encoder(void){
@@ -1043,21 +1058,21 @@ void pid_loop(void){
     }
     if(alt_PID_enabled){
         alt_encoder_val = read_alt_encoder();
-        telnet.printf("ALT ENC %f SETP %f\n", alt_encoder_val, alt_setpoint);
+        //telnet.printf("ALT ENC %f SETP %f\n", alt_encoder_val, alt_setpoint);
         altPID.update();
-        telnet.printf("ALT motor speed %d\n", (int8_t) alt_motor_speed);
+        //telnet.printf("ALT motor speed %d\n", (int8_t) alt_motor_speed);
         set_alt_motor_speed((int8_t) alt_motor_speed);
     }
     if(azi_PID_enabled){
         azi_encoder_val = read_azi_encoder();
-        telnet.printf("AZI ENC %f SETP %f\n", azi_encoder_val, azi_setpoint);
+        //telnet.printf("AZI ENC %f SETP %f\n", azi_encoder_val, azi_setpoint);
         aziPID.update();
-        telnet.printf("AZI motor speed %d\n", (int8_t) azi_motor_speed);
+        //telnet.printf("AZI motor speed %d\n", (int8_t) azi_motor_speed);
         set_azi_motor_speed((int8_t) azi_motor_speed);
     }
     if(abs(aziPID.get_last_error()) < aziPID.get_min_error() && abs(altPID.get_last_error()) < altPID.get_min_error()){
         // We have done, stop moving
-        telnet.print("Disabled\n");
+        //telnet.print("Disabled\n");
         azi_motor_standby();
         alt_motor_standby();
         azi_PID_enabled = false;
@@ -1256,7 +1271,18 @@ void ray_to_setpoints(float alt, float azi){
     get_normal_vec(sun, ory, mir);
     alt_setpoint = absolute_to_geo_alt(mir);
     azi_setpoint = absolute_to_geo_azi(mir);
-    if(azi_setpoint < 0) azi_setpoint += 360.0;
+
+    if(alt_setpoint < 0.) alt_setpoint += 360;
+    if(alt_setpoint > 360.0) alt_setpoint -= 360.;
+    if(alt_setpoint > 90 && alt_setpoint < 270.){
+        sys_log(LOG_INFO, "Applying coordinate system correction");
+        alt_setpoint = 180. - alt_setpoint;
+        azi_setpoint += 180;
+        if(alt_setpoint < 0.) alt_setpoint += 360;
+        if(alt_setpoint > 360.0) alt_setpoint -= 360.;  //Should never happen
+    }
+    if(azi_setpoint < 0.) azi_setpoint += 360.0;
+    if(azi_setpoint > 360.) azi_setpoint -= 360.0;
 }
 
 bool write_scene_on_file(int s){
@@ -1382,9 +1408,9 @@ bool run_scene(uint8_t sn, float run_timestamp=-1., float alt_0=0., float azi_0=
     }
 
     motor_driver_enable();
-    //ray_to_setpoints(scenes[sn][0]+alt_0, scenes[sn][1]+azi_0);
-    alt_setpoint = scenes[sn][0]+alt_0;
-    azi_setpoint = scenes[sn][1]+azi_0;
+    ray_to_setpoints(scenes[sn][0]+alt_0, scenes[sn][1]+azi_0);
+    //alt_setpoint = scenes[sn][0]+alt_0;
+    //azi_setpoint = scenes[sn][1]+azi_0;
     start_pid();
     while(alt_PID_enabled || azi_PID_enabled) pid_loop();
     //telnet.print("Initial position\n");
@@ -1429,9 +1455,9 @@ bool run_scene(uint8_t sn, float run_timestamp=-1., float alt_0=0., float azi_0=
 
         if(now >= next){
             //telnet.printf("END DALT %f DAZI %f\n", delta_alt, delta_azi);
-
-            alt_setpoint = scenes[sn][i*2]+alt_0;
-            azi_setpoint = scenes[sn][i*2+1]+azi_0;
+            ray_to_setpoints(scenes[sn][i*2]+alt_0, scenes[sn][i*2+1]+azi_0);
+            //alt_setpoint = scenes[sn][i*2]+alt_0;
+            //azi_setpoint = scenes[sn][i*2+1]+azi_0;
 
             alt_target_speed = compute_speed(compute_angle_delta(alt_setpoint, alt_encoder_val), SCENE_DT);
             alt_max_speed = compute_speed(compute_angle_delta(alt_setpoint, alt_encoder_val)*(1.+speed_range), SCENE_DT);
@@ -1464,8 +1490,8 @@ bool run_scene(uint8_t sn, float run_timestamp=-1., float alt_0=0., float azi_0=
     aziPID.set_max_speed(127);*/
     sys_log(LOG_INFO, "Scene ended after %.1f s (expected %.1f)\n", 1e-3*(millis()-scene_beg), 1e-3*SCENE_DT*(scene_len[sn]-1));
 
-    azi_motor_standby();
     alt_motor_standby();
+    azi_motor_standby();
     return true;
 }
 
@@ -2106,6 +2132,25 @@ bool cmd_time_to_next_schedule(void){
     return true;
 }
 
+bool cmd_configure_alt_v2d(void){
+    telnet.printf("Assuming you are at 90 degrees.");
+    float volt_at_90 = 0.;
+    for(int i=0; i < encoder_oversampling; i++){
+        volt_at_90 = external_adc.computeVolts(external_adc.readADC_SingleEnded(1));
+    }
+
+    float volt_at_0 = alt_encoder_zero / alt_encoder_volt_to_deg;
+    volt_at_90 /= encoder_oversampling;
+    float new_k = 90.0 / (volt_at_90 - volt_at_0);
+    float old_k = alt_encoder_volt_to_deg;
+    telnet.printf("Assumed volt at zero %f, volt at 90.0 %f\n", volt_at_0, volt_at_90);
+    telnet.printf("New parameter %f, old_parameter %f\n", new_k, old_k);
+    set_float_cfg("altv2d", new_k);
+    set_float_cfg("alte0", get_float_cfg("alte0")/old_k*new_k);
+    return true;
+
+}
+
 bool cmd_battery_charge(void){
     float chg = read_battery_charge();
     if(chg > 0){
@@ -2115,6 +2160,195 @@ bool cmd_battery_charge(void){
     else{
         return false;
     }
+}
+
+bool cmd_test_scene(char *buf){
+    char *sname;
+
+    sname = strtok_r(NULL, "  ", &buf);
+    String sn = String(sname);
+    int j;
+    for(j=0; j < scene_cnt; j++){
+        if(sn == scenes_name[j]){
+            break;
+        }
+    }
+    if(j == scene_cnt){
+        telnet.printf("Scene %s not found.\n", sn);
+        return false;
+    }
+    run_scene(j);
+    return true;
+}
+
+bool cmd_add_wifi_schedule(char *buf){
+    uint32_t h, m, s;
+    sscanf(buf, "%d %d %d", &h, &m, &s);
+    if(h < 0 || h > 23) return false;
+    if(m < 0 || m > 59) return false;
+    if(s < 0 || s > 59) return false;
+    add_scheduled_task_wifi(h, m, s);
+    return true;
+}
+
+bool cmd_add_sequence_schedule(char *buf){
+    uint8_t myseq[MAX_SCENES_IN_SEQUENCE] = {0};
+    uint8_t seq_len = 0;
+    char *next_scene_name, *tok;
+    bool error = false;
+    uint32_t h, m, s;
+
+    tok = strtok(buf, " ");
+    sscanf(tok, "%d", &h);
+    if(h < 0 || h > 23) return false;
+    tok = strtok(NULL, " ");
+    sscanf(tok, "%d", &m);
+    if(m < 0 || m > 59) return false;
+    tok = strtok(NULL, " ");
+    sscanf(tok, "%d", &s);
+    if(s < 0 || s > 59) return false;
+
+    next_scene_name = strtok(NULL, " ");
+
+    while(next_scene_name != NULL){
+        String nsn = String(next_scene_name);
+        int j;
+        for(j=0; j < scene_cnt; j++){
+            if(nsn == scenes_name[j]){
+                myseq[seq_len++] = j;
+                break;
+            }
+        }
+        if(j == scene_cnt){
+            error = true;
+            sys_log(LOG_ERROR, "Scene \"%s\" not found.", nsn);
+        }
+        next_scene_name = strtok(NULL, " ");
+    }
+    if(!error){
+        add_scheduled_task_sequence(h, m, s, myseq, seq_len);
+        sys_log(LOG_INFO, "Added sequence task at %02d:%02d:%02d (it will be scheduled %d'%d\" before)", 
+                h, m, s, (int) SAFETY_TIME_BEFORE_SEQUENCE/60, (int) SAFETY_TIME_BEFORE_SEQUENCE%60 );
+    }
+    return true;
+}
+
+bool cmd_print_schedule(void){
+    uint32_t h, m, s;
+
+    for(int i=0; i<task_cnt; i++){
+        uint64_t timestamp = sch_timestamp[i];
+        if(sch_type[i] == SEQUENCE_TASK) timestamp += SAFETY_TIME_BEFORE_SEQUENCE;
+
+        h = timestamp / 3600;
+        m = (timestamp - 3600 * h) / 60;
+        s = (timestamp - 3600 * h) % 60;
+
+        telnet.printf("[%d] %02d:%02d:%02d ", i, h, m, s);
+
+        if(sch_type[i] == WIFI_TASK){
+            telnet.printf("wifi\n");
+        }
+        if(sch_type[i] == SEQUENCE_TASK){
+            telnet.printf("sequence");
+            for(int j=0; j < sch_sequence_len[i]; j++)
+                telnet.printf(" %s", scenes_name[sch_sequence[i][j]]);
+            telnet.printf("\n");
+        }   
+    }    
+    return true;
+}
+
+bool cmd_save_current_schedule(void){
+    uint32_t h, m, s;
+
+    File file = LittleFS.open("/schedules/show.sch", FILE_WRITE);
+    if(!file){
+        sys_log(LOG_INFO, "Error in writing file: /schedules/show.sch");
+        return false;
+    }
+
+    // Sequence tasks
+    for(int i=0; i<task_cnt; i++){
+        if(sch_type[i] != SEQUENCE_TASK) continue;
+        
+        uint64_t timestamp = sch_timestamp[i];
+        timestamp += SAFETY_TIME_BEFORE_SEQUENCE;
+
+        h = timestamp / 3600;
+        m = (timestamp - 3600 * h) / 60;
+        s = (timestamp - 3600 * h) % 60;
+
+        file.printf("%02d %02d %02d sequence", h, m, s);
+        for(int j=0; j < sch_sequence_len[i]; j++)
+            file.printf(" %s", scenes_name[sch_sequence[i][j]]);
+        file.printf("\n");
+    }    
+
+    file.close();
+    
+    file = LittleFS.open("/schedules/wifi.sch", FILE_WRITE);
+    if(!file){
+        sys_log(LOG_INFO, "Error in writing file: /schedules/wifi.sch");
+        return false;
+    }
+    
+    for(int i=0; i<task_cnt; i++){
+        if(sch_type[i] != WIFI_TASK) continue;
+        uint64_t timestamp = sch_timestamp[i];
+
+        h = timestamp / 3600;
+        m = (timestamp - 3600 * h) / 60;
+        s = (timestamp - 3600 * h) % 60;
+
+        file.printf("%02d %02d %02d wifi\n", h, m, s);
+    }    
+    file.close();
+    return true;
+}
+
+bool cmd_delete_schedule(char *buf){
+    uint16_t sn;
+    sscanf(buf, "%d", &sn);
+    if(sn >= 0  && sn < task_cnt){
+        telnet.printf("Deleting schedule %d\n", sn);
+        return delete_schedule(sn);
+    }
+    return false;
+}
+
+bool cmd_run_sequence(char *buf){
+    uint8_t myseq[MAX_SCENES_IN_SEQUENCE] = {0};
+    uint8_t seq_len = 0;
+    char *next_scene_name, *tok;
+    bool error = false;
+    uint32_t h, m, s;
+
+    next_scene_name = strtok(buf, " ");
+
+    while(next_scene_name != NULL){
+        String nsn = String(next_scene_name);
+        int j;
+        for(j=0; j < scene_cnt; j++){
+            if(nsn == scenes_name[j]){
+                myseq[seq_len++] = j;
+                break;
+            }
+        }
+        if(j == scene_cnt){
+            error = true;
+            telnet.printf("Scene \"%s\" not found.", nsn);
+        }
+        telnet.printf("Scene %d %s\n", myseq[seq_len-1], nsn.c_str());
+        next_scene_name = strtok(NULL, " ");
+    }
+    if(!error && seq_len != 0){
+        error = run_sequence(myseq, seq_len, get_timestamp() + 30);
+        telnet_watchdog_0 = millis();
+        return error;
+    }
+    telnet_watchdog_0 = millis();
+    return false;
 }
 
 bool cmd_parse(char *buf){
@@ -2198,11 +2432,7 @@ bool cmd_parse(char *buf){
         return cmd_driver_off();
     }
     else if(strcmp(tok, "test-scene") == 0){
-        return run_scene(0);
-    }
-    else if(strcmp(tok, "test-sequence") == 0){
-        uint8_t myseq[] = {0, 1, 0};
-        return run_sequence(myseq, 3, -1);
+        return cmd_test_scene(rest);
     }
     else if(strcmp(tok, "sleep") == 0){
         return cmd_sleep(rest);
@@ -2256,6 +2486,27 @@ bool cmd_parse(char *buf){
     else if(strcmp(tok, "battery") == 0){
         return cmd_battery_charge();
     }  
+    else if(strcmp(tok, "calibrate-alt-v2d") == 0){
+        return cmd_configure_alt_v2d();
+    } 
+    else if(strcmp(tok, "add-task-wifi") == 0){
+        return cmd_add_wifi_schedule(rest);
+    } 
+    else if(strcmp(tok, "add-task-sequence") == 0){
+        return cmd_add_sequence_schedule(rest);
+    } 
+    else if(strcmp(tok, "print-schedule") == 0){
+        return cmd_print_schedule();
+    } 
+    else if(strcmp(tok, "save-schedule") == 0){
+        return cmd_save_current_schedule();
+    }
+    else if(strcmp(tok, "delete-schedule") == 0){
+        return cmd_delete_schedule(rest);
+    }  
+    else if(strcmp(tok, "run-test-sequence") == 0){
+        return cmd_run_sequence(rest);
+    } 
     else{
         return cmd_err(tok);
     }
@@ -2355,6 +2606,9 @@ void setup_motors(){
 
     azi_encoder_zero = get_float_cfg("azie0");
     alt_encoder_zero = get_float_cfg("alte0");
+
+    alt_encoder_volt_to_deg = get_float_cfg("altv2d");
+    azi_encoder_volt_to_deg = get_float_cfg("aziv2d");
 
     azi_motor_min_s = get_float_cfg("azi_ms");
     azi_motor_max_sv = get_float_cfg("azi_Msv");
@@ -2503,8 +2757,8 @@ void setup() {
     load_schedule_from_file("/schedules/show.sch");
     load_schedule_from_file("/schedules/wifi.sch");
 
-    //if(true){
-    if(bootn == 0 || !RTC_ok || (RTC_ok && !check_time())){
+    if(true){
+    //if(bootn == 0 || !RTC_ok || (RTC_ok && !check_time())){
         if(!RTC_ok) sys_log(LOG_WARNING, "RTC is not working.");
         if(RTC_ok && !check_time()) sys_log(LOG_WARNING, "RTC is working, but date is wrong.");
         if(bootn != 0) sys_log(LOG_INFO, "Attempting WiFi connection to syncronize RTC.");
@@ -2547,6 +2801,7 @@ void setup() {
         sys_log(LOG_ERROR, "External ADC not working, system is unable to move.");
     }
     cleanup_syslog();
+    system_checks();
 }
 
 void loop() {

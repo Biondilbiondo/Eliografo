@@ -16,6 +16,8 @@
 #define DEFAULT_ALT_KD 0.
 #define DEFAULT_ALT_KI 0.
 
+#define DEFAULT_VOLT_TO_DEG (360.0/2.5)
+
 //#define ALT_MOTOR_INVERTED
 //#define AZI_MOTOR_INVERTED
 #define ENCODER_OVERSAMPLING 1
@@ -51,5 +53,12 @@
 #define BATTERY_R2_kOHM 10.
 #define BATTERY_VOLTAGE_DIVIDER_FAC (BATTERY_R2_kOHM/(BATTERY_R2_kOHM+BATTERY_R1_kOHM))
 
+
+#define MAX_LOG_FILES 120
+// Delete a log file after number of days, -1 to keep everything
+#define LOG_DELETE_AFTER_DAYS -1
+#define LOG_LEVEL LOG_INFO
+#define SERIAL_LOG_ENABLED
+#define LITTLEFS_LOG_ENABLED
 
 #endif

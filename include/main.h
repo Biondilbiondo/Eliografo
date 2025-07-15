@@ -51,6 +51,11 @@
 #define PREF_RW_MODE false
 #define PREF_RO_MODE true
 
+#define LOG_DEBUG 6
+#define LOG_INFO 2
+#define LOG_WARNING 1
+#define LOG_ERROR 0 
+
 
 void setup_wifi();
 void setup_telnet();
@@ -86,5 +91,4 @@ float read_azi_encoder(void);
 float read_alt_encoder(void);
 
 bool run_sequence(uint8_t *scenes_seq, uint8_t sequence_len, float run_timestamp);
-
-void IRAM_ATTR PID_isr(void);
+void sys_log(uint8_t type, const char *format, ...);
