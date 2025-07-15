@@ -34,3 +34,6 @@
 [submodule "lib/Adafruit_ADS1X15"]
 	path = lib/Adafruit_ADS1X15
 	url = https://github.com/adafruit/Adafruit_ADS1X15.git
+[submodule "lib/BatterySense"]
+	path = lib/BatterySense
+	url = https://github.com/rlogiacco/BatterySense

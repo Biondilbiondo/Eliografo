@@ -8,9 +8,6 @@
 #define ATM_PRESSURE 101.0 //kPa
 #define ATM_TEMPERATURE 298.0 // K
 
-//#define USE_MPU6050
-#define USE_GY271
-
 #define DEFAULT_AZI_KP 10.
 #define DEFAULT_AZI_KD 0.
 #define DEFAULT_AZI_KI 0.
@@ -18,8 +15,6 @@
 #define DEFAULT_ALT_KP 10.
 #define DEFAULT_ALT_KD 0.
 #define DEFAULT_ALT_KI 0.
-
-#define PID_INTERRUPT_MS 10
 
 //#define ALT_MOTOR_INVERTED
 //#define AZI_MOTOR_INVERTED
@@ -48,9 +43,13 @@
 //#define WIFI_WATCHDOG_TIME (60000L) // 1 min
 //#define WIFI_WATCHDOG_TIME (10000L)
 
+#define TELNET_WATCHDOG_TIME (60000L)
 
-#ifndef USE_MPU6050
-#define USE_MPU9250
-#endif
+#define BATTERY_MIN_mV 9000.
+#define BATTERY_MAX_mV 12600.
+#define BATTERY_R1_kOHM 147.
+#define BATTERY_R2_kOHM 10.
+#define BATTERY_VOLTAGE_DIVIDER_FAC (BATTERY_R2_kOHM/(BATTERY_R2_kOHM+BATTERY_R1_kOHM))
+
 
 #endif

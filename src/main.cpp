@@ -10,6 +10,7 @@ char wifi_passwords[MAX_WIFI_NETWORKS][128];
 uint8_t wifi_net_cnt = 0;
 bool WiFi_ok = false;
 uint32_t wifi_watchdog_0;
+uint32_t telnet_watchdog_0;
 
 //WiFiServer ComServer(23);
 //WiFiClient Controller;
@@ -553,7 +554,7 @@ void schedule_task_loop(void){
                 sys_log(LOG_DEBUG, "Timestamp %f schedule timestamp %f", timestamp, (float) sch_timestamp[i]);
                 if(WiFi_ok){
                     if(telnet.isConnected()){
-                        telnet.printf("Sorry but a sequence is starting right now, you can reconnect at the end.");
+                        telnet.printf("Sorry but a sequence is starting right now, you can reconnect at the end.\n");
                         telnet.disconnectClient();
                     }
                     wifi_off();
@@ -742,6 +743,18 @@ void update_sun_vec(void){
 }
 
 // Motors and Encoders Routine
+float read_battery_charge(void){
+    float f_v = 0.0;
+    if(!external_ADC_ok) return -1.0;
+    for(int i=0; i < encoder_oversampling; i++){
+        f_v += external_adc.computeVolts(external_adc.readADC_SingleEnded(2)) * BATTERY_VOLTAGE_DIVIDER_FAC;
+        if(i != encoder_oversampling-1) delay(1);
+    }
+
+    f_v /= encoder_oversampling;
+    return sigmoidal(f_v*1000., BATTERY_MIN_mV, BATTERY_MAX_mV);
+}
+
 void motor_driver_enable(void){
     if(!driver_on){
         driver_on = true;
@@ -1511,6 +1524,13 @@ bool wifi_on(void){
 }
 
 bool wifi_watchdog_loop(void){
+    if(telnet.isConnected()){
+        if(millis() - telnet_watchdog_0 > TELNET_WATCHDOG_TIME){
+            sys_log(LOG_INFO, "Telnet session disconnected by watchdog.");
+            telnet.printf("\nSession disconnected by watchdog.\n");
+            telnet.disconnectClient();
+        }
+    }
     if(millis() - wifi_watchdog_0 > WIFI_WATCHDOG_TIME){
         if(WiFi_ok){
             if(telnet.isConnected()){
@@ -1708,6 +1728,7 @@ bool cmd_time(void){
 }
 
 bool cmd_reboot(void){
+    set_float_cfg("bootn", 0.0);
     telnet.disconnectClient();
     ESP.restart();
     return true;
@@ -2085,6 +2106,17 @@ bool cmd_time_to_next_schedule(void){
     return true;
 }
 
+bool cmd_battery_charge(void){
+    float chg = read_battery_charge();
+    if(chg > 0){
+        telnet.printf("%.1f %%\n", chg);
+        return true;
+    }
+    else{
+        return false;
+    }
+}
+
 bool cmd_parse(char *buf){
     char *tok, *rest;
     const char *delim = " \n\r";
@@ -2221,6 +2253,9 @@ bool cmd_parse(char *buf){
     else if(strcmp(tok, "next-schedule") == 0){
         return cmd_time_to_next_schedule();
     }  
+    else if(strcmp(tok, "battery") == 0){
+        return cmd_battery_charge();
+    }  
     else{
         return cmd_err(tok);
     }
@@ -2238,6 +2273,7 @@ void onTelnetConnect(String ip) {
     telnet.println("Use quit to disconnect\n");
     cmd_system_status();
     telnet.print("[  ] > ");
+    telnet_watchdog_0 = millis();
 }
 
 void onTelnetDisconnect(String ip) {
@@ -2264,6 +2300,7 @@ void onTelnetInput(String str) {
     else{
         telnet.print("[!!] > ");
     }
+    telnet_watchdog_0 = millis();
 }
 
 void setup_telnet() {  
@@ -2450,8 +2487,13 @@ void setup() {
     setup_rtc();
     setup_littlefs();
 
+    uint16_t y;
+    uint8_t m,d, h, mi;
+    float s;
+    get_time(&y, &m, &d, &h, &mi, &s);
+
     sys_log(LOG_INFO, "This is heligraph %012x", chip_id);
-    sys_log(LOG_INFO, "Bootnumber %d", bootn);
+    sys_log(LOG_INFO, "Bootnumber %d @ %04d-%02d-%02dT%02d:%02d:%06.4fZ\n", bootn, y, m, d, h, mi, s);
 
     current_lon = get_float_cfg("lon");
     current_lat = get_float_cfg("lat");
@@ -2465,7 +2507,7 @@ void setup() {
     if(bootn == 0 || !RTC_ok || (RTC_ok && !check_time())){
         if(!RTC_ok) sys_log(LOG_WARNING, "RTC is not working.");
         if(RTC_ok && !check_time()) sys_log(LOG_WARNING, "RTC is working, but date is wrong.");
-        sys_log(LOG_INFO, "Attempting WiFi connection to syncronize RTC.");
+        if(bootn != 0) sys_log(LOG_INFO, "Attempting WiFi connection to syncronize RTC.");
         setup_wifi();
     }
     else{

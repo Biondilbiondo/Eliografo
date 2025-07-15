@@ -20,6 +20,9 @@
 #include <Preferences.h>
 #include <nvs_flash.h>
 
+//Battery
+#include "Battery.h"
+
 // MPU gyro accell sensor
 #ifdef USE_MPU6050
 #include <Adafruit_MPU6050.h>
