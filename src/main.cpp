@@ -1683,7 +1683,7 @@ bool cmd_time(void){
 }
 
 bool cmd_reboot(void){
-    set_int_cfg("bootn", 0L);
+    if(bootn > 0) set_int_cfg("bootn", 0L);
     telnet.disconnectClient();
     ESP.restart();
     return true;
@@ -2767,11 +2767,16 @@ void setup() {
     load_schedule_from_file("/schedules/show.sch");
     load_schedule_from_file("/schedules/wifi.sch");
 
-    if(true){
-    //if(bootn == 0 || !RTC_ok || (RTC_ok && !check_time())){
-        if(!RTC_ok) sys_log(LOG_WARNING, "RTC is not working.");
-        if(RTC_ok && !check_time()) sys_log(LOG_WARNING, "RTC is working, but date is wrong.");
-        if(bootn != 0) sys_log(LOG_INFO, "Attempting WiFi connection to syncronize RTC.");
+    if(bootn <= 0 || !RTC_ok || (RTC_ok && !check_time())){
+        if(bootn <= 0){
+            sys_log(LOG_WARNING, "Boot number is < 0. Until it grows above 0 wifi will be on at every startup (%d s)", MAX_SLEEP_S);
+            sys_log(LOG_INFO, "Use set bootn 1 to stop this from happening.");
+        }
+        else{
+            if(!RTC_ok) sys_log(LOG_WARNING, "RTC is not working.");
+            if(RTC_ok && !check_time()) sys_log(LOG_WARNING, "RTC is working, but date is wrong.");
+            if(bootn != 0) sys_log(LOG_INFO, "Attempting WiFi connection to syncronize RTC.");
+        }
         setup_wifi();
     }
     else{
