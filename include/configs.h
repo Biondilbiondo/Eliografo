@@ -33,6 +33,9 @@
 #define DEFAULT_MIN_SPEED_VALUE 1.0
 #define DEFAULT_MAX_SPEED_VALUE 16.0
 
+#define DEFAULT_SLEEP_ALT 270.
+#define DEFAULT_SLEEP_AZI 0.
+
 // Conversion factor of a speed in deg/s to PWM value [-127; 127]
 #define DEFAULT_SPEED_TO_PWM_ALT 3.5
 #define DEFAULT_SPEED_TO_PWM_AZI 3.5

@@ -59,6 +59,8 @@ float alt_motor_max_angular_speed;
 float alt_encoder_volt_to_deg, azi_encoder_volt_to_deg;
 uint32_t encoder_oversampling = ENCODER_OVERSAMPLING;
 
+float sleep_alt, sleep_azi;
+
 float angular_speed_to_pwm_alt, angular_speed_to_pwm_azi;
 int32_t pwm_min_alt, pwm_min_azi;
 
@@ -649,6 +651,10 @@ float get_float_default_cfg(const char *k){
         return DEFAULT_VOLT_TO_DEG;
     if(strcmp(k, "aziv2d") == 0)
         return DEFAULT_VOLT_TO_DEG;
+    if(strcmp(k, "azinap") == 0)
+        return DEFAULT_SLEEP_AZI;
+    if(strcmp(k, "altnap") == 0)
+        return DEFAULT_SLEEP_ALT;
 
     return 0.0;
 }
@@ -778,7 +784,8 @@ void configurations_log(void){
     telnet.printf("%-35s %f\n", "ALT_VOLT_TO_DEG", get_float_cfg("aziv2d"));
     telnet.printf("%-35s %f\n", "SPEED_TO_PWM_ALT", get_float_cfg("alt_s2p"));
     telnet.printf("%-35s %f\n", "SPEED_TO_PWM_AZI", get_float_cfg("azi_s2p"));
-
+    telnet.printf("%-35s %f\n", "SLEEP_ALT", get_float_cfg("altnap"));
+    telnet.printf("%-35s %f\n", "SLEEP_AZI", get_float_cfg("azinap"));
     return;
 }
 
@@ -1579,7 +1586,7 @@ void sleep_for_seconds(uint32_t tts){
     sys_log(LOG_INFO, "Going to sleep for %d senonds.", tts);
 
     motor_driver_enable();
-    set_pid_goto(270., 0.);
+    set_pid_goto(sleep_alt, sleep_azi);
     while(alt_PID_enabled || azi_PID_enabled) pid_loop();
 
     wifi_off();
@@ -2643,6 +2650,9 @@ void setup_motors(){
                           get_float_cfg("alt_ms"),
                           PWM_MAX_VALUE,
                           get_float_cfg("alt_me"));
+    
+    sleep_alt = get_int_cfg("altnap");
+    sleep_azi = get_int_cfg("azinap");
 
     azi_motor_standby();
     alt_motor_standby();
