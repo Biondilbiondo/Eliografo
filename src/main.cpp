@@ -1407,6 +1407,7 @@ bool wifi_watchdog_loop(void){
             telnet.printf("\nSession disconnected by watchdog.\n");
             telnet.disconnectClient();
         }
+        wifi_watchdog_0 = millis();
     }
     if(millis() - wifi_watchdog_0 > WIFI_WATCHDOG_TIME){
         if(WiFi_ok){
