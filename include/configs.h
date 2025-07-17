@@ -31,14 +31,30 @@
 #define DEFAULT_MIN_SPEED 80
 #define DEFAULT_MIN_SPEED_VALUE 1.0
 #define DEFAULT_MAX_SPEED_VALUE 16.0
-#define DEFAULT_M_SPEED .3
 
+// Conversion factor of a speed in deg/s to PWM value [-127; 127]
+#define DEFAULT_SPEED_TO_PWM_ALT 3.5
+#define DEFAULT_SPEED_TO_PWM_AZI 3.5
+#define DEFAULT_PWM_MIN_ALT 60
+#define DEFAULT_PWM_MIN_AZI 60
+
+#define MAX_DAILY_TASKS 256
+#define MAX_SCENES_IN_SEQUENCE 64
+#define SCHEDULE_TIME_DELTA 1
 #define MAX_SLEEP_S (2*3600)
 #define SLEEP_TIME_S (10*60)
 #define SAFETY_TIME_BEFORE_FIRST_SCENE 120
 #define SAFETY_TIME_BEFORE_SEQUENCE (SAFETY_TIME_BEFORE_FIRST_SCENE+30)
 #define WAKEUP_TIME_BEFORE_SCHEDULE_S (SAFETY_TIME_BEFORE_SEQUENCE+30)
 
+
+#define SCENE_LEN_SECONDS 60
+#define SCENE_LEN  (120*1000/SCENE_DT)
+#define MAX_SCENES 16
+
+
+#define MAX_WIFI_NETWORKS 16
+#define N_WIFI_ATTEMPTS 10
 // Timer for wifi connections in ms 
 // #define WIFI_WATCHDOG_TIME (600000L) // 10 min
 #define WIFI_WATCHDOG_TIME (300000L) // 5 min
@@ -56,9 +72,13 @@
 
 #define MAX_LOG_FILES 120
 // Delete a log file after number of days, -1 to keep everything
-#define LOG_DELETE_AFTER_DAYS -1
+#define LOG_DELETE_AFTER_DAYS 0
 #define LOG_LEVEL LOG_INFO
 #define SERIAL_LOG_ENABLED
 #define LITTLEFS_LOG_ENABLED
+
+// Range in which the date is considered to be correct
+#define SAFETY_MIN_YEAR 2025
+#define SAFETY_MAX_YEAR 2030
 
 #endif

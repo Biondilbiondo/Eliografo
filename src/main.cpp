@@ -4,7 +4,7 @@
 #include "configs.h"
 #include "pins.h"
 
-#define MAX_WIFI_NETWORKS 16
+
 char wifi_ssids[MAX_WIFI_NETWORKS][128];
 char wifi_passwords[MAX_WIFI_NETWORKS][128];
 uint8_t wifi_net_cnt = 0;
@@ -26,15 +26,6 @@ ESP32Time internal_rtc;
 RTC_DS1307 rtc;
 bool RTC_ok = false, internal_RTC_ok = false;
 
-#ifdef USE_MPU6050
-Adafruit_MPU6050 mpu;
-#endif
-#ifdef USE_MPU9250
-Adafruit_Sensor *accelerometer, *gyroscope, *magnetometer;
-#endif
-
-bool MPU_ok = false, ROTF_ok=false;
-
 Adafruit_ADS1115 external_adc;
 bool external_ADC_ok = false;
 
@@ -42,13 +33,6 @@ bool external_ADC_ok = false;
 Preferences HGPrefs; 
 
 // Daily Tasks
-#define MAX_DAILY_TASKS 256
-#define SCH_TIME_DEL 1
-#define NO_TASK 0
-#define WIFI_TASK 1
-#define SEQUENCE_TASK 2
-#define MAX_SCENES_IN_SEQUENCE 64
-
 uint64_t sch_timestamp[MAX_DAILY_TASKS];
 bool sch_run[MAX_DAILY_TASKS] = {false};
 uint8_t sch_type[MAX_DAILY_TASKS] = {NO_TASK};
@@ -57,11 +41,6 @@ uint8_t sch_sequence[MAX_DAILY_TASKS][MAX_SCENES_IN_SEQUENCE] = {0};
 uint8_t sch_sequence_len[MAX_DAILY_TASKS] = {0};
 
 // Scene variables
-#define SCENE_LEN 120
-//in us
-#define SCENE_DT 500
-#define MAX_SCENES 16
-
 uint8_t scene_cnt;
 float scenes[MAX_SCENES][SCENE_LEN*2] = {{0}};
 int scene_len[MAX_SCENES];
@@ -74,10 +53,13 @@ float azi_setpoint, alt_setpoint,
       azi_motor_speed, alt_motor_speed,
       alt_encoder_zero, azi_encoder_zero;
 uint32_t pid_watchdog_t0, pid_watchdog_elap;
-float azi_motor_min_s, azi_motor_max_sv, azi_motor_min_sv, azi_motor_m_s;
-float alt_motor_min_s, alt_motor_max_sv, alt_motor_min_sv, alt_motor_m_s;
+float azi_motor_max_angular_speed;
+float alt_motor_max_angular_speed;
 float alt_encoder_volt_to_deg, azi_encoder_volt_to_deg;
 uint8_t encoder_oversampling = ENCODER_OVERSAMPLING;
+
+float angular_speed_to_pwm_alt, angular_speed_to_pwm_azi;
+uint8_t pwm_min_alt, pwm_min_azi;
 
 float current_lat, current_lon;
 
@@ -249,8 +231,7 @@ bool check_time(void){
     uint8_t m, d, h, min;
     float s;
     get_time(&y, &m, &d, &h, &min, &s);
-#define SAFETY_MIN_YEAR 2025
-#define SAFETY_MAX_YEAR 2030
+
     if(y < SAFETY_MIN_YEAR) return false;
     if(y > SAFETY_MAX_YEAR) return false;
     return true;
@@ -426,6 +407,34 @@ bool load_wifi_credentials_from_file(const char *path){
     return true;
 }
 
+bool save_wifi_credentials_on_file(const char *path){
+    String s;
+    char cs[1024];
+    char *tok;
+
+    File file = LittleFS.open(path, FILE_WRITE);
+    if(!file || file.isDirectory()){
+        sys_log(LOG_ERROR, "Failed to open %s for writing", path);
+        return false;
+    }
+
+    for(int i=0; i < wifi_net_cnt; i++)
+        file.printf("%s %s\n", wifi_ssids[i], wifi_passwords[i]);
+    
+    file.close();
+    return true;
+}
+
+bool delete_wifi_credentials(int c){
+    if(c >= wifi_net_cnt || c < 0) return false;
+    for(int i=c+1; i<wifi_net_cnt; i++){
+        strcpy(wifi_ssids[i-1], wifi_ssids[i]);
+        strcpy(wifi_passwords[i-1], wifi_passwords[i]);
+    }
+    wifi_net_cnt--;
+    return true;
+}
+
 // Scheduled tasks
 bool add_scheduled_task_wifi(uint32_t h, uint32_t m, uint32_t s){
 
@@ -498,7 +507,7 @@ bool load_schedule_from_file(const char *path){
         if(strcmp(tok, "wifi") == 0){
             type = WIFI_TASK;
             add_scheduled_task_wifi(h, m, sec);
-            sys_log(LOG_INFO, "Added wifi task at %02d:%02d:%02d", h, m, sec);
+            sys_log(LOG_DEBUG, "Added wifi task at %02d:%02d:%02d", h, m, sec);
         }
         else if(strcmp(tok, "sequence") == 0){
             type = SEQUENCE_TASK;
@@ -526,7 +535,7 @@ bool load_schedule_from_file(const char *path){
             }
             if(!error){
                 add_scheduled_task_sequence(h, m, sec, myseq, seq_len);
-                sys_log(LOG_INFO, "Added sequence task at %02d:%02d:%02d (it will be scheduled %d'%d\" before)", 
+                sys_log(LOG_DEBUG, "Added sequence task at %02d:%02d:%02d (it will be scheduled %d'%d\" before)", 
                         h, m, sec, (int) SAFETY_TIME_BEFORE_SEQUENCE/60, (int) SAFETY_TIME_BEFORE_SEQUENCE%60 );
             }
         }
@@ -546,12 +555,12 @@ void schedule_task_loop(void){
     for(int i=0; i<task_cnt; i++){
         if(sch_run[i]){ 
             // Reload
-            if(abs(timestamp - (float) sch_timestamp[i]) > 2 * SCH_TIME_DEL) sch_run[i] = false;
+            if(abs(timestamp - (float) sch_timestamp[i]) > 2 * SCHEDULE_TIME_DELTA) sch_run[i] = false;
             // Skip
             continue;
         }
 
-        if(abs(timestamp - (float) sch_timestamp[i]) < SCH_TIME_DEL){
+        if(abs(timestamp - (float) sch_timestamp[i]) < SCHEDULE_TIME_DELTA){
             /*telnet.print("Running daily task\n");
             telnet.printf("%02d at %02d:%02d:%02d\n", i, hours, minutes, (int) seconds);*/
             if(sch_type[i] == WIFI_TASK && !WiFi_ok){
@@ -631,33 +640,24 @@ float get_float_default_cfg(const char *k){
         return DEFAULT_AZI_MIN_E;
     if(strcmp(k, "alt_me") == 0)
         return DEFAULT_ALT_MIN_E;
-    
-    if(strcmp(k, "azi_ms") == 0)
-        return DEFAULT_MIN_SPEED;
-    if(strcmp(k, "alt_ms") == 0)
-        return DEFAULT_MIN_SPEED;
-
-    if(strcmp(k, "azi_msv") == 0)
-        return DEFAULT_MIN_SPEED_VALUE;
-    if(strcmp(k, "alt_msv") == 0)
-        return DEFAULT_MIN_SPEED_VALUE;
 
     if(strcmp(k, "azi_Msv") == 0)
         return DEFAULT_MAX_SPEED_VALUE;
     if(strcmp(k, "alt_Msv") == 0)
         return DEFAULT_MAX_SPEED_VALUE;
-
-    if(strcmp(k, "azi_sm") == 0)
-        return DEFAULT_M_SPEED;
-    if(strcmp(k, "alt_sm") == 0)
-        return DEFAULT_M_SPEED;
+    if(strcmp(k, "alt_s2p"))
+        return DEFAULT_SPEED_TO_PWM_ALT;
+    if(strcmp(k, "azi_s2p"))
+        return DEFAULT_SPEED_TO_PWM_AZI;
+    if(strcmp(k, "alt_mPWM"))
+        return DEFAULT_PWM_MIN_ALT;
+    if(strcmp(k, "azi_mPWM"))
+        return DEFAULT_PWM_MIN_AZI;
 
     if(strcmp(k, "altv2d") == 0)
         return DEFAULT_VOLT_TO_DEG;
-
     if(strcmp(k, "aziv2d") == 0)
         return DEFAULT_VOLT_TO_DEG;
-
     if(strcmp(k, "overs") == 0)
         return ENCODER_OVERSAMPLING;
 
@@ -926,7 +926,7 @@ float alt_encoder_to_degrees(float val){
 
 float read_alt_encoder(void){
     float f_v = 0.0, val, del, first;
-    //if(!external_ADC_ok) return 0.0;
+    if(!external_ADC_ok) return 0.0;
     for(int i=0; i < encoder_oversampling; i++){
         val = alt_encoder_to_degrees(external_adc.computeVolts(external_adc.readADC_SingleEnded(1)));
         if(i==0){
@@ -984,14 +984,13 @@ void start_pid(void){
     azi_PID_enabled = true;
 }
 
-#define GAIN 3.5
-int8_t compute_speed(float dangle, float dt, float min=-127, float max=127){
+int8_t compute_speed(float dangle, float dt, float min, float max, float gain, float pwm_min){
     float speed;
 
     if(dangle > 0)
-        speed = (60+1e3 * dangle / dt * GAIN);
+        speed = (pwm_min + 1e3 * dangle / dt * gain);
     else
-        speed = (-60+1e3 * dangle / dt * GAIN);
+        speed = (-pwm_min + 1e3 * dangle / dt * gain);
 
     if(speed > max) speed = max;
     if(speed < min) speed = min;
@@ -1023,8 +1022,8 @@ void set_pid_goto(float alt, float azi){
     delta_alt = abs(compute_angle_delta(alt_encoder_val, alt_setpoint));
     delta_azi = abs(compute_angle_delta(azi_encoder_val, azi_setpoint));
     
-    est_t_alt = delta_alt/alt_motor_max_sv;
-    est_t_azi = delta_azi/azi_motor_max_sv;
+    est_t_alt = delta_alt/alt_motor_max_angular_speed;
+    est_t_azi = delta_azi/azi_motor_max_angular_speed;
     if(est_t_alt > est_t_azi)
         maxt = est_t_alt;
     else
@@ -1102,7 +1101,7 @@ bool calibrate_speed(void){
     // Check motor/encoder polarity
     a0 = read_alt_encoder();
     t0 = get_timestamp_RTC();
-    set_alt_motor_speed(127);
+    set_alt_motor_speed(PWM_MAX_VALUE);
     delay(TIME_CAL * 1000);
     set_alt_motor_speed(0);
     t1 = get_timestamp_RTC();
@@ -1123,7 +1122,7 @@ bool calibrate_speed(void){
 
     a0 = read_azi_encoder();
     t0 = get_timestamp_RTC();
-    set_azi_motor_speed(127);
+    set_azi_motor_speed(PWM_MAX_VALUE);
     delay(TIME_CAL * 1000);
     set_azi_motor_speed(0);
     t1 = get_timestamp_RTC();
@@ -1198,8 +1197,8 @@ bool calibrate_speed(void){
     }
     
     maxspeed_val /= mcnt;
-    estimated_m = (maxspeed_val-minspeed_val) / (127-minspeed);
-    telnet.printf("Alt Min speed: %d %.2f\nAlt Max speed %d %.2f\nAlt Estimated m: %f\n", minspeed, minspeed_val, 127, maxspeed_val, estimated_m);
+    estimated_m = (maxspeed_val-minspeed_val) / (PWM_MAX_VALUE-minspeed);
+    telnet.printf("Alt Min speed: %d %.2f\nAlt Max speed %d %.2f\nAlt Estimated m: %f\n", minspeed, minspeed_val, PWM_MAX_VALUE, maxspeed_val, estimated_m);
     HGPrefs.putFloat("alt_ms", minspeed);
     HGPrefs.putFloat("alt_msv", minspeed_val);
     HGPrefs.putFloat("alt_Msv", maxspeed_val);
@@ -1253,8 +1252,8 @@ bool calibrate_speed(void){
     }
     
     maxspeed_val /= mcnt;
-    estimated_m = (maxspeed_val-minspeed_val) / (127-minspeed);
-    telnet.printf("Azi Min speed: %d %.2f\nAzi Max speed %d %.2f\nAzi Estimated m: %f\n", minspeed, minspeed_val, 127, maxspeed_val, estimated_m);
+    estimated_m = (maxspeed_val-minspeed_val) / (PWM_MAX_VALUE-minspeed);
+    telnet.printf("Azi Min speed: %d %.2f\nAzi Max speed %d %.2f\nAzi Estimated m: %f\n", minspeed, minspeed_val, PWM_MAX_VALUE, maxspeed_val, estimated_m);
     
     HGPrefs.putFloat("azi_ms", minspeed);
     HGPrefs.putFloat("azi_msv", minspeed_val);
@@ -1398,26 +1397,42 @@ bool run_scene(uint8_t sn, float run_timestamp=-1., float alt_0=0., float azi_0=
     float current_timestamp;
     bool wait = true;
 
+// ENABLE JUST FOR DEBUG POURPOSE!
+#define DEBUG_VERBOSE_SCENE
+//#define DEBUG_USE_ABSOLUTE_INSTEAD_OF_SOLAR
+
     current_timestamp = get_timestamp_RTC();
-    //sys_log(LOG_DEBUG, "Running scene %d %s", sn, scenes_name[sn]);
-    //sys_log(LOG_DEBUG, "Current timestamp %.1f, run timestamp %.1f", current_timestamp, run_timestamp);
+#ifdef DEBUG_VERBOSE_SCENE
+    sys_log(LOG_DEBUG, "Running scene %d %s", sn, scenes_name[sn]);
+    sys_log(LOG_DEBUG, "Current timestamp %.1f, run timestamp %.1f", current_timestamp, run_timestamp);
+#endif
     if(run_timestamp < 0 || current_timestamp > run_timestamp){
         // Run immediately
         wait = false;
-        //sys_log(LOG_DEBUG, "I don't have to wait!");
+#ifdef DEBUG_VERBOSE_SCENE
+        sys_log(LOG_DEBUG, "I don't have to wait!");
+#endif
     }
 
     motor_driver_enable();
+#ifdef DEBUG_USE_ABSOLUTE_INSTEAD_OF_SOLAR
+    alt_setpoint = scenes[sn][0]+alt_0;
+    azi_setpoint = scenes[sn][1]+azi_0;
+#else
     ray_to_setpoints(scenes[sn][0]+alt_0, scenes[sn][1]+azi_0);
-    //alt_setpoint = scenes[sn][0]+alt_0;
-    //azi_setpoint = scenes[sn][1]+azi_0;
+#endif
+
     start_pid();
     while(alt_PID_enabled || azi_PID_enabled) pid_loop();
-    //telnet.print("Initial position\n");
+#ifdef DEBUG_VERBOSE_SCENE
+    telnet.print("Initial position\n");
+#endif
     if(wait){
         do{
             current_timestamp = get_timestamp_RTC();
-            //sys_log(LOG_DEBUG, "Current timestamp %.1f, run timestamp %.1f", current_timestamp, run_timestamp);
+#ifdef DEBUG_VERBOSE_SCENE
+            sys_log(LOG_DEBUG, "Current timestamp %.1f, run timestamp %.1f", current_timestamp, run_timestamp);
+#endif
             delay(10);
         }while(run_timestamp > current_timestamp);
     }
@@ -1441,11 +1456,15 @@ bool run_scene(uint8_t sn, float run_timestamp=-1., float alt_0=0., float azi_0=
         dt = next-now;
         if(dt > 100){
             
-            alt_speed_i = compute_speed(delta_alt, dt, alt_min_speed, alt_max_speed);
-            azi_speed_i = compute_speed(delta_azi, dt, azi_min_speed, azi_max_speed);
-            //telnet.printf("dt = %d\n", dt);
-            //telnet.printf("alt %f azi %f \n", delta_alt, delta_azi);
-            //telnet.printf("speeds %d %d\n",alt_speed_i, azi_speed_i);
+            alt_speed_i = compute_speed(delta_alt, dt, alt_min_speed, alt_max_speed, 
+                                        angular_speed_to_pwm_alt, (float) pwm_min_alt);
+            azi_speed_i = compute_speed(delta_azi, dt, azi_min_speed, 
+                                        azi_max_speed, angular_speed_to_pwm_azi, (float) pwm_min_azi);
+#ifdef DEBUG_VERBOSE_SCENE
+            telnet.printf("dt = %d\n", dt);
+            telnet.printf("alt %f azi %f \n", delta_alt, delta_azi);
+            telnet.printf("speeds %d %d\n",alt_speed_i, azi_speed_i);
+#endif
 
             set_alt_motor_speed(alt_speed_i);
             set_azi_motor_speed(azi_speed_i);
@@ -1454,40 +1473,56 @@ bool run_scene(uint8_t sn, float run_timestamp=-1., float alt_0=0., float azi_0=
         }
 
         if(now >= next){
-            //telnet.printf("END DALT %f DAZI %f\n", delta_alt, delta_azi);
+#ifdef DEBUG_VERBOSE_SCENE
+            telnet.printf("END DALT %f DAZI %f\n", delta_alt, delta_azi);
+#endif
+#ifdef DEBUG_USE_ABSOLUTE_INSTEAD_OF_SOLAR
+            alt_setpoint = scenes[sn][i*2]+alt_0;
+            azi_setpoint = scenes[sn][i*2+1]+azi_0;
+#else
             ray_to_setpoints(scenes[sn][i*2]+alt_0, scenes[sn][i*2+1]+azi_0);
-            //alt_setpoint = scenes[sn][i*2]+alt_0;
-            //azi_setpoint = scenes[sn][i*2+1]+azi_0;
+#endif
 
-            alt_target_speed = compute_speed(compute_angle_delta(alt_setpoint, alt_encoder_val), SCENE_DT);
-            alt_max_speed = compute_speed(compute_angle_delta(alt_setpoint, alt_encoder_val)*(1.+speed_range), SCENE_DT);
-            alt_min_speed = compute_speed(compute_angle_delta(alt_setpoint, alt_encoder_val)*(1.-speed_range), SCENE_DT);
+            alt_target_speed = compute_speed(compute_angle_delta(alt_setpoint, alt_encoder_val), 
+                                             SCENE_DT, 
+                                             -PWM_MAX_VALUE, PWM_MAX_VALUE,
+                                             angular_speed_to_pwm_alt, (float) pwm_min_alt);
+            alt_max_speed = compute_speed(compute_angle_delta(alt_setpoint, alt_encoder_val)*(1.+speed_range), 
+                                          SCENE_DT,
+                                          -PWM_MAX_VALUE, PWM_MAX_VALUE,
+                                          angular_speed_to_pwm_alt, (float) pwm_min_alt);
+            alt_min_speed = compute_speed(compute_angle_delta(alt_setpoint, alt_encoder_val)*(1.-speed_range), 
+                                          SCENE_DT,
+                                          -PWM_MAX_VALUE, PWM_MAX_VALUE,
+                                          angular_speed_to_pwm_alt, (float) pwm_min_alt);
 
-            azi_target_speed = compute_speed(compute_angle_delta(azi_setpoint, azi_encoder_val), SCENE_DT);
-            azi_max_speed = compute_speed(compute_angle_delta(azi_setpoint, azi_encoder_val)*(1.+speed_range), SCENE_DT);
-            azi_min_speed = compute_speed(compute_angle_delta(azi_setpoint, azi_encoder_val)*(1.-speed_range), SCENE_DT);
-
-            //telnet.printf("ALT %d %d %d\n", alt_min_speed, alt_target_speed, alt_max_speed);
-            //telnet.printf("AZI %d %d %d\n", azi_min_speed, azi_target_speed, azi_max_speed);
+            azi_target_speed = compute_speed(compute_angle_delta(azi_setpoint, azi_encoder_val),
+                                             SCENE_DT, 
+                                             -PWM_MAX_VALUE, PWM_MAX_VALUE,
+                                             angular_speed_to_pwm_azi, (float) pwm_min_azi);
+            azi_max_speed = compute_speed(compute_angle_delta(azi_setpoint, azi_encoder_val)*(1.+speed_range),
+                                          SCENE_DT,
+                                          -PWM_MAX_VALUE, PWM_MAX_VALUE,
+                                          angular_speed_to_pwm_azi, (float) pwm_min_azi);
+            azi_min_speed = compute_speed(compute_angle_delta(azi_setpoint, azi_encoder_val)*(1.-speed_range),
+                                          SCENE_DT,
+                                          -PWM_MAX_VALUE, PWM_MAX_VALUE,
+                                          angular_speed_to_pwm_azi, (float) pwm_min_azi);
+#ifdef DEBUG_VERBOSE_SCENE
+            telnet.printf("ALT %d %d %d\n", alt_min_speed, alt_target_speed, alt_max_speed);
+            telnet.printf("AZI %d %d %d\n", azi_min_speed, azi_target_speed, azi_max_speed);
+#endif
             
             set_alt_motor_speed(alt_target_speed);
             set_azi_motor_speed(azi_target_speed);
 
             now = millis();
             next = scene_beg + SCENE_DT * (i+1);
-            //start_pid();
+
             i++;
-            //telnet.printf("STEP %d\n", i);
         }
-        //pid_loop();
-    }
-    /*while(now < next){
-        now = get_timestamp_RTC();
-        pid_loop();
     }
 
-    altPID.set_max_speed(127);
-    aziPID.set_max_speed(127);*/
     sys_log(LOG_INFO, "Scene ended after %.1f s (expected %.1f)\n", 1e-3*(millis()-scene_beg), 1e-3*SCENE_DT*(scene_len[sn]-1));
 
     alt_motor_standby();
@@ -1623,7 +1658,7 @@ bool cmd_system_status(void){
     else
         telnet.println("external ADC: NOT OK");
 
-    return RTC_ok && internal_RTC_ok && external_ADC_ok;
+    return true;
 }
 
 void deep_sleep_hold_start(void){
@@ -1776,27 +1811,6 @@ bool cmd_get_geo(void){
 
     char buf[32];
     sprintf(buf, "LAT: %08.4f LON: %08.4f\n", lat, lon);
-    telnet.print(buf);
-    return true;
-}
-
-//TODO: Remove
-bool cmd_pid_prm(void){
-    char buf[64];
-    sprintf(buf, "ALT: P %8.1f I %8.1f D %8.1f\n", get_float_cfg("alt_kp"), get_float_cfg("alt_ki"), get_float_cfg("alt_kd"));
-    telnet.print(buf);
-    sprintf(buf, "AZI: P %8.1f I %8.1f D %8.1f\n", get_float_cfg("azi_kp"), get_float_cfg("azi_ki"), get_float_cfg("azi_kd"));
-    telnet.print(buf);
-    return true;
-}
-//TODO: Remove
-bool cmd_pid_vals(void){
-    char buf[64];
-    sprintf(buf, "ALT: SPEED %f VAL %f SET %f\n", alt_motor_speed, alt_encoder_val, alt_setpoint);
-    telnet.print(buf);
-    sprintf(buf, "AZI: SPEED %f VAL %f SET %f\n", azi_motor_speed, azi_encoder_val, azi_setpoint);
-    telnet.print(buf);
-    sprintf(buf, "%f\n\n", get_timestamp_RTC());
     telnet.print(buf);
     return true;
 }
@@ -2057,7 +2071,7 @@ bool cmd_ls(char *buf){
 bool cmd_list_scenes(void){
     for(int i=0; i < scene_cnt; i++){
         telnet.printf("(%02d) %20s %03d f %.2f s\n", i, 
-                      scenes_name[i], scene_len[i], 1.0 * scene_len[i] * SCENE_DT);
+                      scenes_name[i], scene_len[i], 1.0e-3 * scene_len[i] * SCENE_DT);
     }
     return true;
 }
@@ -2088,6 +2102,12 @@ bool cmd_scene_add_frame(char *rest){
     float alt, azi;
     sscanf(rest, "%d%f%f", &ns, &alt, &azi);
     return  scene_add_frame(ns, alt, azi);
+}
+
+bool cmd_write_scene(char *rest){
+    int ns;
+    sscanf(rest, "%d%f%f", &ns);
+    return  write_scene_on_file(ns);
 }
 
 bool cmd_print_scene(char *rest){
@@ -2351,6 +2371,31 @@ bool cmd_run_sequence(char *buf){
     return false;
 }
 
+bool cmd_add_wifi(char *buf){
+    char *ssid = strtok(buf, " ");
+    char *pasw = strtok(NULL, " ");
+
+    if(wifi_net_cnt < MAX_WIFI_NETWORKS){
+        strcpy(wifi_ssids[wifi_net_cnt], ssid);
+        strcpy(wifi_passwords[wifi_net_cnt], pasw);
+        wifi_net_cnt++;
+        return true;
+    }
+    return false;
+}
+
+bool cmd_delete_wifi(char *buf){
+    int i;
+    sscanf(buf, "%d", &i);
+    return delete_wifi_credentials(i);
+}
+
+bool cmd_print_wifi(){
+    for(int i=0; i < wifi_net_cnt; i++)
+        telnet.printf("[%d] %s %s\n", i, wifi_ssids[i], wifi_passwords[i]);
+    return true;
+}
+
 bool cmd_parse(char *buf){
     char *tok, *rest;
     const char *delim = " \n\r";
@@ -2387,9 +2432,6 @@ bool cmd_parse(char *buf){
     else if(strcmp(tok, "get") == 0){
         return cmd_get(rest);
     }
-    else if(strcmp(tok, "pid-prm") == 0){
-        return cmd_pid_prm();
-    }
     else if(strcmp(tok, "factory-reset") == 0){
         return cmd_factory_reset();
     }
@@ -2413,9 +2455,6 @@ bool cmd_parse(char *buf){
     }
     else if(strcmp(tok, "azi-move") == 0){
         return cmd_azi_move(rest);
-    }
-    else if(strcmp(tok, "pid-vals") == 0){
-        return cmd_pid_vals();
     }
     else if(strcmp(tok, "mc") == 0){
         return cmd_manual_control(rest);
@@ -2460,6 +2499,9 @@ bool cmd_parse(char *buf){
     }
     else if(strcmp(tok, "add-frame-scene") == 0){
         return cmd_scene_add_frame(rest);
+    }
+    else if(strcmp(tok, "write-scene") == 0){
+        return cmd_write_scene(rest);
     }
     else if(strcmp(tok, "test-adc") == 0){
         return cmd_test_adc_encoder();
@@ -2506,6 +2548,18 @@ bool cmd_parse(char *buf){
     }  
     else if(strcmp(tok, "run-test-sequence") == 0){
         return cmd_run_sequence(rest);
+    } 
+    else if(strcmp(tok, "save-wifi") == 0){
+        return save_wifi_credentials_on_file("/wifi_net.txt");
+    } 
+    else if(strcmp(tok, "add-wifi") == 0){
+        return cmd_add_wifi(rest);
+    } 
+    else if(strcmp(tok, "delete-wifi") == 0){
+        return cmd_delete_wifi(rest);
+    } 
+    else if(strcmp(tok, "print-wifi") == 0){
+        return cmd_print_wifi();
     } 
     else{
         return cmd_err(tok);
@@ -2610,15 +2664,12 @@ void setup_motors(){
     alt_encoder_volt_to_deg = get_float_cfg("altv2d");
     azi_encoder_volt_to_deg = get_float_cfg("aziv2d");
 
-    azi_motor_min_s = get_float_cfg("azi_ms");
-    azi_motor_max_sv = get_float_cfg("azi_Msv");
-    azi_motor_min_sv = get_float_cfg("azi_msv");
-    azi_motor_m_s = get_float_cfg("azi_sm");
-
-    alt_motor_min_s = get_float_cfg("alt_ms");
-    alt_motor_max_sv = get_float_cfg("alt_Msv");
-    alt_motor_min_sv = get_float_cfg("alt_msv");
-    alt_motor_m_s = get_float_cfg("alt_sm");
+    azi_motor_max_angular_speed = get_float_cfg("azi_Msv");
+    alt_motor_max_angular_speed = get_float_cfg("alt_Msv");
+    angular_speed_to_pwm_alt = get_float_cfg("alt_s2p");
+    angular_speed_to_pwm_azi = get_float_cfg("azi_s2p");
+    pwm_min_alt = (uint8_t) get_float_cfg("alt_mPWM");
+    pwm_min_azi = (uint8_t) get_float_cfg("azi_mPWM");
 
     encoder_oversampling = (uint8_t) get_float_cfg("overs");
 
@@ -2626,14 +2677,14 @@ void setup_motors(){
                           get_float_cfg("azi_ki"),
                           get_float_cfg("azi_kd"),
                           get_float_cfg("azi_ms"),
-                          127,
+                          PWM_MAX_VALUE,
                           get_float_cfg("azi_me"));
 
     altPID.set_PID_params(get_float_cfg("alt_kp"),
                           get_float_cfg("alt_ki"),
                           get_float_cfg("alt_kd"),
                           get_float_cfg("alt_ms"),
-                          127,
+                          PWM_MAX_VALUE,
                           get_float_cfg("alt_me"));
 
     azi_motor_standby();
@@ -2645,7 +2696,7 @@ bool wifi_connect(uint8_t conn_idx){
   
     sys_log(LOG_INFO, "Attempting wifi connection to %s", wifi_ssids[conn_idx]);
     sys_log(LOG_DEBUG, "Wifi password is %s", wifi_passwords[conn_idx]);
-#define N_WIFI_ATTEMPTS 10
+
     for(uint8_t i=0;i < N_WIFI_ATTEMPTS && WiFi.status() != WL_CONNECTED; i++)
     {
       delay(1000);

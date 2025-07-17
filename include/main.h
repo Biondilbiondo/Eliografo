@@ -44,6 +44,7 @@
 
 // PWM definitions
 #define MOTOR_PWM_RES 8
+#define PWM_MAX_VALUE 127
 #define MOTOR_PWM_FREQ 35000
 
 #define CMD_BUF_LEN 256
@@ -55,6 +56,14 @@
 #define LOG_INFO 2
 #define LOG_WARNING 1
 #define LOG_ERROR 0 
+
+#define NO_TASK 0
+#define WIFI_TASK 1
+#define SEQUENCE_TASK 2
+
+//in ms
+#define SCENE_DT 500
+
 
 
 void setup_wifi();
