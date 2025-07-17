@@ -1047,6 +1047,7 @@ void pid_loop(void){
             return;
         }
     }
+    check_external_ADC();
     if(!external_ADC_ok){
         azi_motor_standby();
         alt_motor_standby();
@@ -1077,191 +1078,6 @@ void pid_loop(void){
         azi_PID_enabled = false;
         alt_PID_enabled = false;
     }
-}
-
-bool calibrate_speed(void){
-#define TIME_CAL 2
-#define FAST_INCREMENT 5
-#define SLOW_INCREMENT 1
-    int16_t speed;
-    float a0, a1, t0, t1, sfwd, srev, smean, estimated_m;
-    int16_t minspeed = -1, mcnt;
-    float minspeed_val, maxspeed_val;
-    bool alt_reversed, azi_reversed;
-    motor_driver_enable();
-
-    for(int i=0; i < 10; i++){
-        t0 = get_timestamp_RTC();
-        a0 = read_alt_encoder();
-        t1 = get_timestamp_RTC();
-        smean += t1-t0;
-    }
-    telnet.printf("Estimated time for encoder read %fs\n", smean/10);
-
-    // Check motor/encoder polarity
-    a0 = read_alt_encoder();
-    t0 = get_timestamp_RTC();
-    set_alt_motor_speed(PWM_MAX_VALUE);
-    delay(TIME_CAL * 1000);
-    set_alt_motor_speed(0);
-    t1 = get_timestamp_RTC();
-    a1 = read_alt_encoder();
-    if((a1-a0)/(t1-t0) < 0){
-        telnet.printf("Alt motor or encoder is reversed.\n");
-        telnet.printf("If mirror moved upword, reverse encoder.\n");
-        telnet.printf("If mirror moved downward, reverse motor.\n");
-        alt_reversed = true;
-    }
-    else{
-        telnet.printf("Alt motor and encoder are OK.\n");
-        telnet.printf("If mirror moved downword, reverse axis.\n");
-        alt_reversed = false;
-    }
-    
-    delay(1000);
-
-    a0 = read_azi_encoder();
-    t0 = get_timestamp_RTC();
-    set_azi_motor_speed(PWM_MAX_VALUE);
-    delay(TIME_CAL * 1000);
-    set_azi_motor_speed(0);
-    t1 = get_timestamp_RTC();
-    a1 = read_azi_encoder();
-    if((a1-a0)/(t1-t0) < 0){
-        telnet.printf("Azi motor or encoder is reversed.\n");
-        telnet.printf("If mirror moved clockwise, reverse encoder.\n");
-        telnet.printf("If mirror moved counterclockwise, reverse motor.\n");
-        azi_reversed = true;
-    }
-    else{
-        telnet.printf("Azi motor and encoder are OK.\n");
-        telnet.printf("If mirror moved counterclockwise, reverse axis.\n");
-        azi_reversed = false;
-    }
-
-    if(alt_reversed || azi_reversed){
-        motor_driver_disable();
-        return false;
-    }
-
-
-    // Go to 90 degrees to simplify calculations...
-    set_pid_goto(90., 90.);
-    while(alt_PID_enabled || azi_PID_enabled) pid_loop();
-    delay(1000);
-
-    int16_t increment = FAST_INCREMENT;
-    maxspeed_val = 0.;
-    mcnt = 0;
-    for(speed=0; speed < 128; speed += increment){
-        a0 = read_alt_encoder();
-        t0 = get_timestamp_RTC();
-        set_alt_motor_speed(speed);
-        delay(TIME_CAL * 1000);
-        set_alt_motor_speed(0);
-        t1 = get_timestamp_RTC();
-        a1 = read_alt_encoder();
-        sfwd = (a1-a0)/(t1-t0);
-
-        //telnet.printf("(FWD %d) A1 %.1f A0 %.1f\n", speed, a1, a0);
-        telnet.printf("(FWD %d) Distance %.1f deg, time %.2f s, speed %.1f deg/s\n", speed, a1-a0, t1-t0, (a1-a0)/(t1-t0));
-        //telnet.printf("%+03d %.2f\n", speed, sfwd);
-        a0 = a1;
-        t0 = get_timestamp_RTC();
-        set_alt_motor_speed(-speed);
-        delay(TIME_CAL * 1000);
-        set_alt_motor_speed(0);
-        t1 = get_timestamp_RTC();
-        a1 = read_alt_encoder();
-        //telnet.printf("(REV %d) Distance %.1f deg, time %.2f s, speed %.1f deg/s\n", speed, a1-a0, t1-t0, (a1-a0)/(t1-t0));
-        srev = (a1-a0)/(t1-t0);
-
-        //telnet.printf("(REV %d) A1 %.1f A0 %.1f\n", speed, a1, a0);
-        telnet.printf("(REV %d) Distance %.1f deg, time %.2f s, speed %.1f deg/s\n", speed, a1-a0, t1-t0, (a1-a0)/(t1-t0));
-        //telnet.printf("%+03d %.2f\n", -speed, srev);
-        smean = (sfwd - srev) / 2;
-
-        if(smean > MIN_ALLOWED_SPEED && minspeed < 0 && increment == FAST_INCREMENT){
-            speed -= FAST_INCREMENT;
-            increment = SLOW_INCREMENT;
-            //break;
-        }
-        if(minspeed < 0 && increment == SLOW_INCREMENT){
-            minspeed = speed;
-            minspeed_val = smean;
-        }
-        if(minspeed > 0 && speed > 122){
-            maxspeed_val += smean;
-            mcnt++;
-        }
-    }
-    
-    maxspeed_val /= mcnt;
-    estimated_m = (maxspeed_val-minspeed_val) / (PWM_MAX_VALUE-minspeed);
-    telnet.printf("Alt Min speed: %d %.2f\nAlt Max speed %d %.2f\nAlt Estimated m: %f\n", minspeed, minspeed_val, PWM_MAX_VALUE, maxspeed_val, estimated_m);
-    HGPrefs.putFloat("alt_ms", minspeed);
-    HGPrefs.putFloat("alt_msv", minspeed_val);
-    HGPrefs.putFloat("alt_Msv", maxspeed_val);
-    HGPrefs.putFloat("alt_sm", estimated_m);
-
-    minspeed = -1;
-    increment = FAST_INCREMENT;
-    maxspeed_val = 0.;
-    mcnt = 0;
-    for(speed=0; speed < 128; speed += increment){
-        a0 = read_azi_encoder();
-        t0 = get_timestamp_RTC();
-        set_azi_motor_speed(speed);
-        delay(TIME_CAL * 1000);
-        set_azi_motor_speed(0);
-        t1 = get_timestamp_RTC();
-        a1 = read_azi_encoder();
-        sfwd = (a1-a0)/(t1-t0);
-
-        //telnet.printf("(FWD %d) A1 %.1f A0 %.1f\n", speed, a1, a0);
-        telnet.printf("(FWD %d) Distance %.1f deg, time %.2f s, speed %.1f deg/s\n", speed, a1-a0, t1-t0, (a1-a0)/(t1-t0));
-        //telnet.printf("%+03d %.2f\n", speed, sfwd);
-        a0 = a1;
-        t0 = get_timestamp_RTC();
-        set_azi_motor_speed(-speed);
-        delay(TIME_CAL * 1000);
-        set_azi_motor_speed(0);
-        t1 = get_timestamp_RTC();
-        a1 = read_azi_encoder();
-        //telnet.printf("(REV %d) Distance %.1f deg, time %.2f s, speed %.1f deg/s\n", speed, a1-a0, t1-t0, (a1-a0)/(t1-t0));
-        srev = (a1-a0)/(t1-t0);
-
-        //telnet.printf("(REV %d) A1 %.1f A0 %.1f\n", speed, a1, a0);
-        telnet.printf("(REV %d) Distance %.1f deg, time %.2f s, speed %.1f deg/s\n", speed, a1-a0, t1-t0, (a1-a0)/(t1-t0));
-        //telnet.printf("%+03d %.2f\n", -speed, srev);
-        smean = (sfwd - srev) / 2;
-
-        if(smean > MIN_ALLOWED_SPEED && minspeed < 0 && increment == FAST_INCREMENT){
-            speed -= FAST_INCREMENT;
-            increment = SLOW_INCREMENT;
-            //break;
-        }
-        if(minspeed < 0 && increment == SLOW_INCREMENT){
-            minspeed = speed;
-            minspeed_val = smean;
-        }
-        if(minspeed > 0 && speed > 122){
-            maxspeed_val += smean;
-            mcnt++;
-        }
-    }
-    
-    maxspeed_val /= mcnt;
-    estimated_m = (maxspeed_val-minspeed_val) / (PWM_MAX_VALUE-minspeed);
-    telnet.printf("Azi Min speed: %d %.2f\nAzi Max speed %d %.2f\nAzi Estimated m: %f\n", minspeed, minspeed_val, PWM_MAX_VALUE, maxspeed_val, estimated_m);
-    
-    HGPrefs.putFloat("azi_ms", minspeed);
-    HGPrefs.putFloat("azi_msv", minspeed_val);
-    HGPrefs.putFloat("azi_Msv", maxspeed_val);
-    HGPrefs.putFloat("azi_sm", estimated_m);
-
-    motor_driver_disable();
-    return true;
 }
 
 void ray_to_setpoints(float alt, float azi){
@@ -1661,24 +1477,6 @@ bool cmd_system_status(void){
     return true;
 }
 
-void deep_sleep_hold_start(void){
-    //gpio_hold_en((gpio_num_t)ALT_MOTOR_PWM);
-    //gpio_hold_en((gpio_num_t)AZI_MOTOR_PWM);
-    //gpio_hold_en((gpio_num_t)I2C_SCL);
-    //gpio_hold_en((gpio_num_t)I2C_SDA);
-    gpio_hold_en((gpio_num_t)DRIVER_ENABLE);
-    gpio_deep_sleep_hold_en();
-}
-
-void deep_sleep_hold_stop(void){
-    /*gpio_hold_dis((gpio_num_t)ALT_MOTOR_PWM);
-    gpio_hold_dis((gpio_num_t)AZI_MOTOR_PWM);*/
-    //gpio_hold_dis((gpio_num_t)I2C_SCL);
-    //gpio_hold_dis((gpio_num_t)I2C_SDA);
-    gpio_hold_dis((gpio_num_t)DRIVER_ENABLE);
-    gpio_deep_sleep_hold_dis();
-}
-
 void sleep_for_seconds(uint32_t tts){
     uint32_t t0 = millis();
     if(tts > MAX_SLEEP_S) tts = MAX_SLEEP_S;
@@ -2017,9 +1815,13 @@ bool cmd_driver_off(void){
 }
 
 bool cmd_alt_move(char *buf){
-    int t;
+    // Blind version use with coution only during calibration
+    int t, s;
 
-    sscanf(buf, "%d", &t);
+    sscanf(buf, "%d%d", &t, &s);
+    if(s > PWM_MAX_VALUE) s = PWM_MAX_VALUE;
+    if(s < -PWM_MAX_VALUE) s = -PWM_MAX_VALUE;
+    if(t > MAX_BLIND_MOVE_TIME_MS) t=MAX_BLIND_MOVE_TIME_MS;
     if(t > 0){
         set_alt_motor_speed(120);
         delay(t);
@@ -2035,19 +1837,80 @@ bool cmd_alt_move(char *buf){
 }
 
 bool cmd_azi_move(char *buf){
-    int t;
+    // Blind version use with coution only during calibration
+    int t, s;
 
-    sscanf(buf, "%d", &t);
+    sscanf(buf, "%d%d", &t, &s);
+    if(s > PWM_MAX_VALUE) s = PWM_MAX_VALUE;
+    if(s < -PWM_MAX_VALUE) s = -PWM_MAX_VALUE;
+    if(t > MAX_BLIND_MOVE_TIME_MS) t=MAX_BLIND_MOVE_TIME_MS;
     if(t > 0){
-        set_azi_motor_speed(120);
+        set_azi_motor_speed(s);
         delay(t);
         azi_motor_standby();
     }
     else {
-        set_azi_motor_speed(-120);
-        delay(-t);
-        azi_motor_standby();
+        return false;
     }
+    
+    return true;
+}
+
+bool cmd_accel_curve(char *buf){
+    // Blind version use with coution only during calibration
+    int s, t;
+
+    sscanf(buf, "%d%d", &t, &s);
+    if(s < 0) s = -s;
+    if(s > PWM_MAX_VALUE) s = PWM_MAX_VALUE;
+    t *= 1000;
+    if(t < 0) return false;
+    if(t > MAX_BLIND_MOVE_TIME_MS) t = MAX_BLIND_MOVE_TIME_MS;
+
+    float current_angle = read_alt_encoder(), last_angle;
+    uint32_t t0, tc_1, tc;
+    telnet.printf("ALT\n");
+    t0 = millis();
+    set_alt_motor_speed(s);
+    tc = millis();
+    while(tc-t0 < t){
+        last_angle = current_angle;
+        tc_1 = tc;
+        current_angle = read_alt_encoder();
+        tc = millis();
+        telnet.printf("%d %.1f\n", tc-t0, current_angle);
+    }
+    set_alt_motor_speed(-s);
+    while(tc-t0 < t*2){
+        last_angle = current_angle;
+        tc_1 = tc;
+        current_angle = read_alt_encoder();
+        tc = millis();
+        telnet.printf("%d %.1f\n", tc-t0, current_angle);
+    }
+    alt_motor_standby();
+
+    telnet.printf("AZI\n");
+    current_angle = read_azi_encoder();
+    t0 = millis();
+    set_azi_motor_speed(s);
+    tc = millis();
+    while(tc-t0 < t){
+        last_angle = current_angle;
+        tc_1 = tc;
+        current_angle = read_azi_encoder();
+        tc = millis();
+        telnet.printf("%d %.1f\n", tc-t0, current_angle);
+    }
+    set_azi_motor_speed(-s);
+    while(tc-t0 < t*2){
+        last_angle = current_angle;
+        tc_1 = tc;
+        current_angle = read_azi_encoder();
+        tc = millis();
+        telnet.printf("%d %.1f\n", tc-t0, current_angle);
+    }
+    azi_motor_standby();
     
     return true;
 }
@@ -2150,25 +2013,6 @@ bool cmd_time_to_next_schedule(void){
     else
         telnet.print("No next schedule.\n");
     return true;
-}
-
-bool cmd_configure_alt_v2d(void){
-    telnet.printf("Assuming you are at 90 degrees.");
-    float volt_at_90 = 0.;
-    for(int i=0; i < encoder_oversampling; i++){
-        volt_at_90 = external_adc.computeVolts(external_adc.readADC_SingleEnded(1));
-    }
-
-    float volt_at_0 = alt_encoder_zero / alt_encoder_volt_to_deg;
-    volt_at_90 /= encoder_oversampling;
-    float new_k = 90.0 / (volt_at_90 - volt_at_0);
-    float old_k = alt_encoder_volt_to_deg;
-    telnet.printf("Assumed volt at zero %f, volt at 90.0 %f\n", volt_at_0, volt_at_90);
-    telnet.printf("New parameter %f, old_parameter %f\n", new_k, old_k);
-    set_float_cfg("altv2d", new_k);
-    set_float_cfg("alte0", get_float_cfg("alte0")/old_k*new_k);
-    return true;
-
 }
 
 bool cmd_battery_charge(void){
@@ -2515,10 +2359,6 @@ bool cmd_parse(char *buf){
     else if(strcmp(tok, "wifi-off") == 0){
         return wifi_off();
     }
-    else if(strcmp(tok, "calibrate-speed") == 0){
-        calibrate_speed();
-        return true;
-    }    
     else if(strcmp(tok, "syslog") == 0){
         return cmd_sys_log();
     }  
@@ -2528,9 +2368,6 @@ bool cmd_parse(char *buf){
     else if(strcmp(tok, "battery") == 0){
         return cmd_battery_charge();
     }  
-    else if(strcmp(tok, "calibrate-alt-v2d") == 0){
-        return cmd_configure_alt_v2d();
-    } 
     else if(strcmp(tok, "add-task-wifi") == 0){
         return cmd_add_wifi_schedule(rest);
     } 
@@ -2561,6 +2398,9 @@ bool cmd_parse(char *buf){
     else if(strcmp(tok, "print-wifi") == 0){
         return cmd_print_wifi();
     } 
+    else if(strcmp(tok, "accel-calibration") == 0){
+        return cmd_accel_curve(rest);
+    }     
     else{
         return cmd_err(tok);
     }
@@ -2861,23 +2701,22 @@ void loop() {
     if(WiFi_ok) telnet.loop();
     schedule_task_loop();
     wifi_watchdog_loop();
-
-    // TODO improve
-    check_external_ADC();
-    if(!external_ADC_ok){
-        motor_driver_disable();
-        return;
-    }
     
-    if(manual_control_enabled || solar_control_enabled){
-        if(solar_control_enabled){
-            ray_to_setpoints(ory_alt, ory_azi);
-        }
-        pid_loop();
-        if(!azi_PID_enabled && !alt_PID_enabled){
-            manual_control_enabled = false;
-            solar_control_enabled = false;
-            reset_pid_watchdog();
+    if(!external_ADC_ok){
+        alt_motor_standby();
+        azi_motor_standby();
+    }
+    else{
+        if(manual_control_enabled || solar_control_enabled){
+            if(solar_control_enabled){
+                ray_to_setpoints(ory_alt, ory_azi);
+            }
+            pid_loop();
+            if(!azi_PID_enabled && !alt_PID_enabled){
+                manual_control_enabled = false;
+                solar_control_enabled = false;
+                reset_pid_watchdog();
+            }
         }
     }
 }
