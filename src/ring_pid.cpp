@@ -16,10 +16,8 @@ float ringPID::get_min_error(void){
     return min_error;
 }
 
-void ringPID::set_PID_params(float Kp, float Ki, float Kd, float OutMin, float OutMax, float MinErr){
+void ringPID::set_PID_params(float Kp, float OutMin, float OutMax, float MinErr){
     kp = Kp;
-    ki = Ki;
-    kd = Kd;
     outmax = OutMax;
     outmin = OutMin;
     min_error = MinErr;
@@ -57,10 +55,8 @@ void ringPID::update(void){
     }
 
     float p_comp = kp * error;
-    float i_comp = 0.0;
-    float d_comp = 0.0;
 
-    *output = p_comp + i_comp + d_comp;
+    *output = p_comp;
     if(*output > 0){
         if(*output > outmax) *output = outmax;
         if(*output < outmin) *output = outmin;

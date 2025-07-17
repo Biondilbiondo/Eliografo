@@ -759,6 +759,7 @@ void configurations_log(void){
     telnet.printf("%-35s %d\n", "TELNET_WATCHDOG_TIME", TELNET_WATCHDOG_TIME);
     telnet.printf("%-35s %d\n", "WAKEUP_TIME_BEFORE_SCHEDULE_S", WAKEUP_TIME_BEFORE_SCHEDULE_S);
     telnet.printf("%-35s %d\n", "WIFI_WATCHDOG_TIME", WIFI_WATCHDOG_TIME);
+    telnet.printf("%-35s %d\n", "PWM_MAX_VALUE", PWM_MAX_VALUE);
 
     telnet.printf("%-35s %f\n", "ATM_PRESSURE", ATM_PRESSURE);
     telnet.printf("%-35s %f\n", "ATM_TEMPERATURE", ATM_TEMPERATURE);
@@ -1942,14 +1943,14 @@ bool cmd_alt_move(char *buf){
     if(s > PWM_MAX_VALUE) s = PWM_MAX_VALUE;
     if(s < -PWM_MAX_VALUE) s = -PWM_MAX_VALUE;
     if(t > MAX_BLIND_MOVE_TIME_MS) t=MAX_BLIND_MOVE_TIME_MS;
-    if(t > 0){
-        set_alt_motor_speed(120);
+    if(s > 0){
+        set_alt_motor_speed(s);
         delay(t);
         alt_motor_standby();
     }
     else {
-        set_alt_motor_speed(-120);
-        delay(-t);
+        set_alt_motor_speed(s);
+        delay(t);
         alt_motor_standby();
     }
     
@@ -1964,13 +1965,15 @@ bool cmd_azi_move(char *buf){
     if(s > PWM_MAX_VALUE) s = PWM_MAX_VALUE;
     if(s < -PWM_MAX_VALUE) s = -PWM_MAX_VALUE;
     if(t > MAX_BLIND_MOVE_TIME_MS) t=MAX_BLIND_MOVE_TIME_MS;
-    if(t > 0){
+    if(s > 0){
         set_azi_motor_speed(s);
         delay(t);
         azi_motor_standby();
     }
     else {
-        return false;
+        set_azi_motor_speed(s);
+        delay(t);
+        azi_motor_standby();
     }
     
     return true;
@@ -2360,6 +2363,41 @@ bool cmd_print_wifi(){
     return true;
 }
 
+bool cmd_reload_prm(){
+    azi_encoder_zero = get_float_cfg("azie0");
+    alt_encoder_zero = get_float_cfg("alte0");
+
+    alt_encoder_volt_to_deg = get_float_cfg("altv2d");
+    azi_encoder_volt_to_deg = get_float_cfg("aziv2d");
+
+    azi_motor_max_angular_speed = get_float_cfg("azi_Msv");
+    alt_motor_max_angular_speed = get_float_cfg("alt_Msv");
+    angular_speed_to_pwm_alt = get_float_cfg("alt_s2p");
+    angular_speed_to_pwm_azi = get_float_cfg("azi_s2p");
+    pwm_min_alt = get_int_cfg("alt_mPWM");
+    pwm_min_azi = get_int_cfg("azi_mPWM");
+
+    encoder_oversampling = get_int_cfg("overs");
+
+    aziPID.set_PID_params(get_float_cfg("azi_kp"),
+                          get_float_cfg("azi_ms"),
+                          PWM_MAX_VALUE,
+                          get_float_cfg("azi_me"));
+
+    altPID.set_PID_params(get_float_cfg("alt_kp"),
+                          get_float_cfg("alt_ms"),
+                          PWM_MAX_VALUE,
+                          get_float_cfg("alt_me"));
+    
+    sleep_alt = get_float_cfg("altnap");
+    sleep_azi = get_float_cfg("azinap");
+    log_level = get_int_cfg("logl");
+    log_delete_after_days = get_int_cfg("logr");
+    current_lon = get_float_cfg("lon");
+    current_lat = get_float_cfg("lat");
+    return true;
+}
+
 bool cmd_parse(char *buf){
     char *tok, *rest;
     const char *delim = " \n\r";
@@ -2524,7 +2562,10 @@ bool cmd_parse(char *buf){
     } 
     else if(strcmp(tok, "accel-calibration") == 0){
         return cmd_accel_curve(rest);
-    }     
+    }    
+    else if(strcmp(tok, "reload-prm") == 0){
+        return cmd_reload_prm();
+    }    
     else{
         return cmd_err(tok);
     }
@@ -2638,21 +2679,17 @@ void setup_motors(){
     encoder_oversampling = get_int_cfg("overs");
 
     aziPID.set_PID_params(get_float_cfg("azi_kp"),
-                          get_float_cfg("azi_ki"),
-                          get_float_cfg("azi_kd"),
                           get_float_cfg("azi_ms"),
                           PWM_MAX_VALUE,
                           get_float_cfg("azi_me"));
 
     altPID.set_PID_params(get_float_cfg("alt_kp"),
-                          get_float_cfg("alt_ki"),
-                          get_float_cfg("alt_kd"),
                           get_float_cfg("alt_ms"),
                           PWM_MAX_VALUE,
                           get_float_cfg("alt_me"));
     
-    sleep_alt = get_int_cfg("altnap");
-    sleep_azi = get_int_cfg("azinap");
+    sleep_alt = get_float_cfg("altnap");
+    sleep_azi = get_float_cfg("azinap");
 
     azi_motor_standby();
     alt_motor_standby();

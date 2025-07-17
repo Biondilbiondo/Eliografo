@@ -20,7 +20,7 @@ class ringPID{
         ringPID(float *In, float *Out, float *SetP);
         float get_last_error(void);
         float get_min_error(void);
-        void set_PID_params(float Kp, float Ki, float Kd, float OutMin, float OutMax, float MinErr);
+        void set_PID_params(float Kp, float OutMin, float OutMax, float MinErr);
         void set_PID_vars(float *In, float *Out, float *SetP);
         void set_max_speed(float OutMax);
         void update(void);
