@@ -16,7 +16,8 @@ uint32_t telnet_watchdog_0;
 //WiFiClient Controller;
 ESPTelnet telnet;
 
-uint32_t chip_id, bootn;
+uint32_t chip_id;
+int32_t bootn;
 
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP);
@@ -56,10 +57,10 @@ uint32_t pid_watchdog_t0, pid_watchdog_elap;
 float azi_motor_max_angular_speed;
 float alt_motor_max_angular_speed;
 float alt_encoder_volt_to_deg, azi_encoder_volt_to_deg;
-uint8_t encoder_oversampling = ENCODER_OVERSAMPLING;
+uint32_t encoder_oversampling = ENCODER_OVERSAMPLING;
 
 float angular_speed_to_pwm_alt, angular_speed_to_pwm_azi;
-uint8_t pwm_min_alt, pwm_min_azi;
+int32_t pwm_min_alt, pwm_min_azi;
 
 float current_lat, current_lon;
 
@@ -75,6 +76,9 @@ float ory[3];
 float ory_alt = 0.0, ory_azi = 0.0;
 
 bool littleFS_ok = false;
+
+uint32_t log_level = 0;
+int32_t log_delete_after_days = 0;
 
 void system_checks(void){
     if(alt_encoder_zero <= 100 || alt_encoder_zero >= 260){
@@ -240,7 +244,7 @@ bool check_time(void){
 
 void sys_log(uint8_t type, const char *format, ...)
 {
-    if(LOG_LEVEL < type) return;
+    if(log_level < type) return;
 
     char loc_buf[64];
     char * temp = loc_buf;
@@ -364,7 +368,7 @@ void cleanup_syslog(void){
     float sec;
     
     uint32_t today, log_date;
-    if(LOG_DELETE_AFTER_DAYS < 0) return;
+    if(log_delete_after_days < 0) return;
     get_time(&y, &m, &d, &h, &min, &sec);
     today = days_since_epoch((int) y, (int) m, (int) d);
     for(int i=0; i < MAX_LOG_FILES; i++){
@@ -374,7 +378,7 @@ void cleanup_syslog(void){
         sys_log(LOG_DEBUG, "Filename %s: year %d, month %d, day %d", fnames[i].c_str(), y, m, d);
         log_date = days_since_epoch((int) ylog, (int) mlog, (int) dlog);
         sys_log(LOG_DEBUG, "Today is %d d.a.e. logfile %s is %d d.a.e", today, fnames[i].c_str(), log_date);
-        if(today - log_date > LOG_DELETE_AFTER_DAYS){
+        if(today - log_date > log_delete_after_days){
             remove_file("/log/"+fnames[i]);
         }
         
@@ -618,16 +622,9 @@ bool cfg_key_exists(const char *key){
 float get_float_default_cfg(const char *k){
     if(strcmp(k, "azi_kp") == 0)
         return DEFAULT_AZI_KP;
-    if(strcmp(k, "azi_kd") == 0)
-        return DEFAULT_AZI_KD;
-    if(strcmp(k, "azi_ki") == 0)
-        return DEFAULT_AZI_KI;
     if(strcmp(k, "alt_kp") == 0)
         return DEFAULT_ALT_KP;
-    if(strcmp(k, "alt_kd") == 0)
-        return DEFAULT_ALT_KD;
-    if(strcmp(k, "alt_ki") == 0)
-        return DEFAULT_ALT_KI;
+    
     if(strcmp(k, "lat") == 0)
         return DEFAULT_GEO_LAT;
     if(strcmp(k, "lon") == 0)
@@ -640,34 +637,60 @@ float get_float_default_cfg(const char *k){
         return DEFAULT_AZI_MIN_E;
     if(strcmp(k, "alt_me") == 0)
         return DEFAULT_ALT_MIN_E;
-
     if(strcmp(k, "azi_Msv") == 0)
         return DEFAULT_MAX_SPEED_VALUE;
     if(strcmp(k, "alt_Msv") == 0)
         return DEFAULT_MAX_SPEED_VALUE;
-    if(strcmp(k, "alt_s2p"))
+    if(strcmp(k, "alt_s2p") == 0)
         return DEFAULT_SPEED_TO_PWM_ALT;
-    if(strcmp(k, "azi_s2p"))
+    if(strcmp(k, "azi_s2p") == 0)
         return DEFAULT_SPEED_TO_PWM_AZI;
-    if(strcmp(k, "alt_mPWM"))
-        return DEFAULT_PWM_MIN_ALT;
-    if(strcmp(k, "azi_mPWM"))
-        return DEFAULT_PWM_MIN_AZI;
-
     if(strcmp(k, "altv2d") == 0)
         return DEFAULT_VOLT_TO_DEG;
     if(strcmp(k, "aziv2d") == 0)
         return DEFAULT_VOLT_TO_DEG;
-    if(strcmp(k, "overs") == 0)
-        return ENCODER_OVERSAMPLING;
-
-    if(strcmp(k, "bootn") == 0)
-        return 0.0;
-    
-    if(strcmp(k, "lastnet") == 0)
-        return 0.0;
 
     return 0.0;
+}
+
+int32_t get_int_default_cfg(const char *k){
+    // Actually integers...
+    if(strcmp(k, "overs") == 0)
+        return ENCODER_OVERSAMPLING;
+    if(strcmp(k, "bootn") == 0)
+        return 0L;
+    if(strcmp(k, "lastnet") == 0)
+        return 0L;
+    if(strcmp(k, "alt_mPWM") == 0)
+        return DEFAULT_PWM_MIN_ALT;
+    if(strcmp(k, "azi_mPWM") == 0)
+        return DEFAULT_PWM_MIN_AZI;
+    if(strcmp(k, "logl") == 0)
+        return DEFAULT_LOG_LEVEL;
+    if(strcmp(k, "logr") == 0)
+        return DEFAULT_LOG_DELETE_AFTER_DAYS;
+
+    return 0L;
+}
+
+bool cfg_is_int(const char *k){
+    // Actually integers...
+    if(strcmp(k, "overs") == 0)
+        return true;
+    if(strcmp(k, "bootn") == 0)
+        return true;
+    if(strcmp(k, "lastnet") == 0)
+        return true;
+    if(strcmp(k, "alt_mPWM") == 0)
+        return true;
+    if(strcmp(k, "azi_mPWM") == 0)
+        return true;
+    if(strcmp(k, "logl") == 0)
+        return true;
+    if(strcmp(k, "logr") == 0)
+        return true;
+
+    return false;
 }
 
 float get_float_cfg(const char *k){
@@ -685,6 +708,78 @@ bool set_float_cfg(const char *key, float val){
         sys_log(LOG_ERROR, "Requested key to set %s not found.", key);
         return false;
     }
+}
+
+int32_t get_int_cfg(const char *k){
+    if(!cfg_key_exists(k))
+        HGPrefs.putLong(k, get_float_default_cfg(k));
+    return HGPrefs.getLong(k);
+}
+
+bool set_int_cfg(const char *key, int32_t val){
+    if(cfg_key_exists(key)){
+        HGPrefs.putLong(key, val);
+        return true;
+    }
+    else{
+        sys_log(LOG_ERROR, "Requested key to set %s not found.", key);
+        return false;
+    }
+}
+
+void configurations_log(void){
+    telnet.printf("%-35s %d\n", "ENCODER_OVERSAMPLING", get_int_cfg("overs"));
+    telnet.printf("%-35s %d\n", "LAST_NETWORK", get_int_cfg("lastnet"));
+    telnet.printf("%-35s %d\n", "PWM_MIN_ALT", get_int_cfg("alt_mPWM"));
+    telnet.printf("%-35s %d\n", "PWM_MIN_AZI", get_int_cfg("azi_mPWM"));
+    telnet.printf("%-35s %d\n", "LOG_LEVEL", get_int_cfg("logl"));
+    telnet.printf("%-35s %d\n", "LOG_DELETE_AFTER_DAYS", get_int_cfg("logr"));
+    telnet.printf("%-35s %d\n", "MAX_BLIND_MOVE_TIME_MS", MAX_BLIND_MOVE_TIME_MS);
+    telnet.printf("%-35s %d\n", "MAX_DAILY_TASKS", MAX_DAILY_TASKS);
+    telnet.printf("%-35s %d\n", "MAX_LOG_FILES", MAX_LOG_FILES);
+    telnet.printf("%-35s %d\n", "MAX_SCENES", MAX_SCENES);
+    telnet.printf("%-35s %d\n", "MAX_SCENES_IN_SEQUENCE", MAX_SCENES_IN_SEQUENCE);
+    telnet.printf("%-35s %d\n", "MAX_SLEEP_S", MAX_SLEEP_S);
+    telnet.printf("%-35s %d\n", "MAX_WIFI_NETWORKS", MAX_WIFI_NETWORKS);
+    telnet.printf("%-35s %d\n", "N_WIFI_ATTEMPTS", N_WIFI_ATTEMPTS);
+    telnet.printf("%-35s %d\n", "SAFETY_MAX_YEAR", SAFETY_MAX_YEAR);
+    telnet.printf("%-35s %d\n", "SAFETY_MIN_YEAR", SAFETY_MIN_YEAR);
+    telnet.printf("%-35s %d\n", "SAFETY_TIME_BEFORE_FIRST_SCENE", SAFETY_TIME_BEFORE_FIRST_SCENE);
+    telnet.printf("%-35s %d\n", "SAFETY_TIME_BEFORE_SEQUENCE", SAFETY_TIME_BEFORE_SEQUENCE);
+    telnet.printf("%-35s %d\n", "SCENE_LEN", SCENE_LEN);
+    telnet.printf("%-35s %d\n", "SCENE_LEN_SECONDS", SCENE_LEN_SECONDS);
+    telnet.printf("%-35s %d\n", "SCHEDULE_TIME_DELTA", SCHEDULE_TIME_DELTA);
+    telnet.printf("%-35s %d\n", "SLEEP_TIME_S", SLEEP_TIME_S);
+    telnet.printf("%-35s %d\n", "TELNET_WATCHDOG_TIME", TELNET_WATCHDOG_TIME);
+    telnet.printf("%-35s %d\n", "WAKEUP_TIME_BEFORE_SCHEDULE_S", WAKEUP_TIME_BEFORE_SCHEDULE_S);
+    telnet.printf("%-35s %d\n", "WIFI_WATCHDOG_TIME", WIFI_WATCHDOG_TIME);
+
+    telnet.printf("%-35s %f\n", "ATM_PRESSURE", ATM_PRESSURE);
+    telnet.printf("%-35s %f\n", "ATM_TEMPERATURE", ATM_TEMPERATURE);
+    telnet.printf("%-35s %f\n", "BATTERY_MAX_mV", BATTERY_MAX_mV);
+    telnet.printf("%-35s %f\n", "BATTERY_MIN_mV", BATTERY_MIN_mV);
+    telnet.printf("%-35s %f\n", "BATTERY_R1_kOHM", BATTERY_R1_kOHM);
+    telnet.printf("%-35s %f\n", "BATTERY_R2_kOHM", BATTERY_R2_kOHM);
+    telnet.printf("%-35s %f\n", "BATTERY_VOLTAGE_DIVIDER_FAC", BATTERY_VOLTAGE_DIVIDER_FAC);
+    telnet.printf("%-35s %f\n", "MIN_ALLOWED_SPEED", MIN_ALLOWED_SPEED);
+    telnet.printf("%-35s %f\n", "WATCHDOG_TIME_FACTOR", WATCHDOG_TIME_FACTOR);
+    
+    telnet.printf("%-35s %f\n", "ALT_ENCODER_ZERO", get_float_cfg("alte0"));
+    telnet.printf("%-35s %f\n", "ALT_KP", get_float_cfg("alt_kp"));
+    telnet.printf("%-35s %f\n", "ALT_MIN_E", get_float_cfg("alt_me"));
+    telnet.printf("%-35s %f\n", "AZI_ENCODER_ZERO", get_float_cfg("azie0"));
+    telnet.printf("%-35s %f\n", "AZI_KP", get_float_cfg("azi_kp"));
+    telnet.printf("%-35s %f\n", "AZI_MIN_E", get_float_cfg("azi_me"));
+    telnet.printf("%-35s %f\n", "GEO_LAT", get_float_cfg("lat"));
+    telnet.printf("%-35s %f\n", "GEO_LON", get_float_cfg("lon"));
+    telnet.printf("%-35s %f\n", "AZI_MAX_SPEED_VALUE", get_float_cfg("azi_Msv"));
+    telnet.printf("%-35s %f\n", "AZI_VOLT_TO_DEG", get_float_cfg("aziv2d"));
+    telnet.printf("%-35s %f\n", "ALT_MAX_SPEED_VALUE", get_float_cfg("alt_Msv"));
+    telnet.printf("%-35s %f\n", "ALT_VOLT_TO_DEG", get_float_cfg("aziv2d"));
+    telnet.printf("%-35s %f\n", "SPEED_TO_PWM_ALT", get_float_cfg("alt_s2p"));
+    telnet.printf("%-35s %f\n", "SPEED_TO_PWM_AZI", get_float_cfg("azi_s2p"));
+
+    return;
 }
 
 // Reflection Routines
@@ -1588,7 +1683,7 @@ bool cmd_time(void){
 }
 
 bool cmd_reboot(void){
-    set_float_cfg("bootn", 0.0);
+    set_int_cfg("bootn", 0L);
     telnet.disconnectClient();
     ESP.restart();
     return true;
@@ -1615,38 +1710,55 @@ bool cmd_get_geo(void){
 }
 
 bool cmd_set(char *buf){
-    float val;
+    float valf;
+    int32_t vali;
     char *key, *rest;
 
     key = strtok_r(NULL, " \n\r", &buf);
     rest = strtok_r(NULL, "\r\n", &buf);
-    sscanf(rest, "%f", &val);
-    if(set_float_cfg(key, val)){
-        return true;
+    if(cfg_is_int(key)){
+        sscanf(rest, "%d", &vali);
+
+        if(set_int_cfg(key, vali)){
+            return true;
+        }
+        else{
+            telnet.printf("Key %s not found.\n", key);
+            return false;
+        }
     }
     else{
-        char obuf[32];
-        sprintf(obuf, "Key %s not found.\n", key);
-        telnet.print(obuf);
-        return false;
+        sscanf(rest, "%f", &valf);
+
+        if(set_float_cfg(key, valf)){
+            return true;
+        }
+        else{
+            telnet.printf("Key %s not found.\n", key);
+            return false;
+        }
     }
 }
 
 bool cmd_get(char *buf){
-    float val;
+    float valf;
+    int32_t vali;
     char *key;
-    char obuf[32];
     
     key = strtok_r(NULL, " \n\r", &buf);
     if(cfg_key_exists(key)){
-        val = get_float_cfg(key);
-        sprintf(obuf, "%15s = %10g\n", key, val);
-        telnet.print(obuf);
+        if(cfg_is_int(key)){
+            vali = get_int_cfg(key);
+            telnet.printf("%s = %d\n", key, vali);
+        }
+        else{
+            valf = get_float_cfg(key);
+            telnet.printf("%s = %g\n", key, valf);
+        }
         return true;
     }
     else{
-        sprintf(obuf, "Key %s not found.\n", key);
-        telnet.print(obuf);
+        telnet.printf("Key %s not found.\n", key);
         return false;
     }
 }
@@ -2277,6 +2389,10 @@ bool cmd_parse(char *buf){
     else if(strcmp(tok, "get") == 0){
         return cmd_get(rest);
     }
+    else if(strcmp(tok, "configs") == 0){
+        configurations_log();
+        return true;
+    }
     else if(strcmp(tok, "factory-reset") == 0){
         return cmd_factory_reset();
     }
@@ -2509,10 +2625,10 @@ void setup_motors(){
     alt_motor_max_angular_speed = get_float_cfg("alt_Msv");
     angular_speed_to_pwm_alt = get_float_cfg("alt_s2p");
     angular_speed_to_pwm_azi = get_float_cfg("azi_s2p");
-    pwm_min_alt = (uint8_t) get_float_cfg("alt_mPWM");
-    pwm_min_azi = (uint8_t) get_float_cfg("azi_mPWM");
+    pwm_min_alt = get_int_cfg("alt_mPWM");
+    pwm_min_azi = get_int_cfg("azi_mPWM");
 
-    encoder_oversampling = (uint8_t) get_float_cfg("overs");
+    encoder_oversampling = get_int_cfg("overs");
 
     aziPID.set_PID_params(get_float_cfg("azi_kp"),
                           get_float_cfg("azi_ki"),
@@ -2555,7 +2671,7 @@ bool wifi_connect(uint8_t conn_idx){
 }
 
 void setup_wifi(){
-    uint8_t last_wifi_net = (uint8_t) get_float_cfg("lastnet");
+    uint8_t last_wifi_net = get_int_cfg("lastnet");
     if(last_wifi_net < wifi_net_cnt){
         if(wifi_connect(last_wifi_net)) return;
     }
@@ -2569,7 +2685,7 @@ void setup_wifi(){
         if(i == last_wifi_net) continue;
         if(wifi_connect(i)) break;
     }
-    set_float_cfg("lastnet", (float) i);
+    set_int_cfg("lastnet", (int32_t) i);
 }
 
 void setup_ntp(void){
@@ -2621,7 +2737,9 @@ void setup() {
 
     setup_pref();
     chip_id = (uint32_t) ESP.getEfuseMac();
-    bootn = (uint32_t) get_float_cfg("bootn");
+    bootn = get_int_cfg("bootn");
+    log_level = get_int_cfg("logl");
+    log_delete_after_days = get_int_cfg("logr");
 
     // Serial communication
     Serial.begin(9600);
@@ -2683,7 +2801,7 @@ void setup() {
     setup_adc();
     if(external_ADC_ok) pid_control_reset();
 
-    set_float_cfg("bootn", 1.0 + (float) bootn);
+    set_int_cfg("bootn", 1 + bootn);
 
     if(!check_time()){
         sys_log(LOG_ERROR, "No time information is available. Sleeping until I now what time is it.");

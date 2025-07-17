@@ -73,8 +73,8 @@
 
 #define MAX_LOG_FILES 120
 // Delete a log file after number of days, -1 to keep everything
-#define LOG_DELETE_AFTER_DAYS 0
-#define LOG_LEVEL LOG_INFO
+#define DEFAULT_LOG_DELETE_AFTER_DAYS 0
+#define DEFAULT_LOG_LEVEL LOG_INFO
 #define SERIAL_LOG_ENABLED
 #define LITTLEFS_LOG_ENABLED
 
