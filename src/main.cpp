@@ -569,10 +569,11 @@ void schedule_task_loop(void){
         if(abs(timestamp - (float) sch_timestamp[i]) < SCHEDULE_TIME_DELTA){
             /*telnet.print("Running daily task\n");
             telnet.printf("%02d at %02d:%02d:%02d\n", i, hours, minutes, (int) seconds);*/
-            if(sch_type[i] == WIFI_TASK && !WiFi_ok){
+            if(sch_type[i] == WIFI_TASK){
                 sys_log(LOG_INFO, "WiFi turned on by task number %d", i);
                 sys_log(LOG_DEBUG, "Timestamp %f schedule timestamp %f", timestamp, (float) sch_timestamp[i]);
                 wifi_on();
+                wifi_watchdog_0 = millis();
             }
             if(sch_type[i] == SEQUENCE_TASK){
                 sys_log(LOG_INFO, "Starting sequence task %d right now", i);
@@ -873,20 +874,6 @@ bool is_sun_above_horizon(void){
 }
 
 // Motors and Encoders Routine
-static inline uint8_t _sigmoidal(uint16_t voltage, uint16_t minVoltage, uint16_t maxVoltage) {
-	// slow
-	// uint8_t result = 110 - (110 / (1 + pow(1.468 * (voltage - minVoltage)/(maxVoltage - minVoltage), 6)));
-
-	// steep
-	// uint8_t result = 102 - (102 / (1 + pow(1.621 * (voltage - minVoltage)/(maxVoltage - minVoltage), 8.1)));
-
-	// normal
-    telnet.printf("%d %d %d\n", voltage, minVoltage, maxVoltage);
-	uint8_t result = 105 - (105 / (1 + pow(1.724 * (voltage - minVoltage)/(maxVoltage - minVoltage), 5.5)));
-    telnet.printf("%d\n", result);
-	return result >= 100 ? 100 : result;
-}
-
 float read_battery_charge(void){
     float f_v = 0.0;
     if(!external_ADC_ok) return -1.0;
@@ -896,9 +883,8 @@ float read_battery_charge(void){
     }
 
     f_v /= encoder_oversampling;
-    telnet.printf("Raw V: %f Bat V: %f\n", f_v,  f_v * BATTERY_VOLTAGE_DIVIDER_FAC);
     f_v *= BATTERY_VOLTAGE_DIVIDER_FAC;
-    return (float) _sigmoidal(int16_t (f_v*1000.), BATTERY_MIN_mV, BATTERY_MAX_mV);
+    return (float) sigmoidal(int16_t (f_v*1000.), BATTERY_MIN_mV, BATTERY_MAX_mV);
 }
 
 void motor_driver_enable(void){
