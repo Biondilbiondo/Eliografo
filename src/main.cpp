@@ -82,11 +82,6 @@ bool littleFS_ok = false;
 uint32_t log_level = 0;
 int32_t log_delete_after_days = 0;
 
-void system_checks(void){
-    if(alt_encoder_zero <= 100 || alt_encoder_zero >= 260){
-        sys_log(LOG_WARNING, "Zero of altitude encoder is in the range ov movement and this can cause inaccuracy.");
-    }
-}
 // Time/RTC Routines
 void update_time_from_NTP(void){
     while(!timeClient.update()) {
@@ -243,6 +238,17 @@ bool check_time(void){
     return true;
 }
 
+void check_external_RTC(void){
+    byte error, address;
+    Wire.beginTransmission(DS1307_ADDRESS);
+    error = Wire.endTransmission();
+    if(error == 0) {
+        RTC_ok = true;
+    }
+    else{
+        RTC_ok = false;
+    }
+}
 
 void sys_log(uint8_t type, const char *format, ...)
 {
@@ -591,6 +597,9 @@ void schedule_task_loop(void){
                     wifi_on();
                     wifi_watchdog_0 = millis();
                 }
+                
+                set_pid_goto(sleep_alt, sleep_azi);
+                while(alt_PID_enabled || azi_PID_enabled) pid_loop();
             }
             sch_run[i] = true;
         }   
@@ -1207,6 +1216,7 @@ void ray_to_setpoints(float alt, float azi){
 
 bool write_scene_on_file(int s){
     sys_log(LOG_INFO, "Writing file: %s", "/scenes/"+scenes_name[s]);
+    if(s<0 || s>=scene_cnt) return false;
 
     File file = LittleFS.open("/scenes/"+scenes_name[s], FILE_WRITE);
     if(!file){
@@ -1319,7 +1329,7 @@ bool run_scene(uint8_t sn, float run_timestamp=-1., float alt_0=0., float azi_0=
     bool wait = true;
 
 // ENABLE JUST FOR DEBUG POURPOSE!
-#define DEBUG_VERBOSE_SCENE
+//#define DEBUG_VERBOSE_SCENE
 //#define DEBUG_USE_ABSOLUTE_INSTEAD_OF_SOLAR
 
     current_timestamp = get_timestamp_RTC();
@@ -1403,6 +1413,13 @@ bool run_scene(uint8_t sn, float run_timestamp=-1., float alt_0=0., float azi_0=
 #else
             ray_to_setpoints(scenes[sn][i*2]+alt_0, scenes[sn][i*2+1]+azi_0);
 #endif
+            check_external_ADC();
+            if(!external_ADC_ok){
+                alt_motor_standby();
+                azi_motor_standby();
+                sys_log(LOG_ERROR, "Scene interrupted because ADC went off!");
+                return false;
+            }
 
             alt_target_speed = compute_speed(compute_angle_delta(alt_setpoint, alt_encoder_val), 
                                              SCENE_DT, 
@@ -1469,14 +1486,19 @@ bool run_sequence(uint8_t *scenes_seq, uint8_t sequence_len, float run_timestamp
     }
 
     uint32_t expected_time = 0;
+    bool error;
     for(uint8_t i=0; i < sequence_len && i < MAX_SCENES_IN_SEQUENCE; i++){
         if(i==0){
-            run_scene(scenes_seq[0], run_timestamp);
+            error = !run_scene(scenes_seq[0], run_timestamp);
         }
         else{
-            run_scene(scenes_seq[i]);
+            error = !run_scene(scenes_seq[i]);
         }
         expected_time += (scene_len[scenes_seq[i]] - 1) * SCENE_DT;
+        if(error){
+            sys_log(LOG_ERROR, "Sequence aborted because %d scene returned error.", i);
+            break;
+        }
     }
     current_timestamp = get_timestamp_RTC();
 
@@ -1567,18 +1589,26 @@ bool cmd_system_status(void){
         telnet.println("NTP: OK");
     else
         telnet.println("NTP: NOT OK");
+    check_external_RTC();
     if(RTC_ok) 
         telnet.println("RTC: OK");
-    else
+    else{
         telnet.println("RTC: NOT OK");
+    }
     if(internal_RTC_ok) 
         telnet.println("internal RTC: OK");
     else
         telnet.println("internal RTC: NOT OK");
+    check_external_ADC();
     if(external_ADC_ok) 
         telnet.println("external ADC: OK");
     else
         telnet.println("external ADC: NOT OK");
+
+    if(driver_on)
+        telnet.println("driver is ON");
+    else
+        telnet.println("driver is OFF");
 
     return true;
 }
@@ -2059,7 +2089,7 @@ bool cmd_ls(char *buf){
 bool cmd_list_scenes(void){
     for(int i=0; i < scene_cnt; i++){
         telnet.printf("(%02d) %20s %03d f %.2f s\n", i, 
-                      scenes_name[i], scene_len[i], 1.0e-3 * scene_len[i] * SCENE_DT);
+                      scenes_name[i].c_str(), scene_len[i], 1.0e-3 * scene_len[i] * SCENE_DT);
     }
     return true;
 }
@@ -2094,7 +2124,7 @@ bool cmd_scene_add_frame(char *rest){
 
 bool cmd_write_scene(char *rest){
     int ns;
-    sscanf(rest, "%d%f%f", &ns);
+    sscanf(rest, "%d", &ns);
     return  write_scene_on_file(ns);
 }
 
@@ -2241,7 +2271,7 @@ bool cmd_print_schedule(void){
         if(sch_type[i] == SEQUENCE_TASK){
             telnet.printf("sequence");
             for(int j=0; j < sch_sequence_len[i]; j++)
-                telnet.printf(" %s", scenes_name[sch_sequence[i][j]]);
+                telnet.printf(" %s", scenes_name[sch_sequence[i][j]].c_str());
             telnet.printf("\n");
         }   
     }    
@@ -2270,7 +2300,7 @@ bool cmd_save_current_schedule(void){
 
         file.printf("%02d %02d %02d sequence", h, m, s);
         for(int j=0; j < sch_sequence_len[i]; j++)
-            file.printf(" %s", scenes_name[sch_sequence[i][j]]);
+            file.printf(" %s", scenes_name[sch_sequence[i][j]].c_str());
         file.printf("\n");
     }    
 
@@ -2738,8 +2768,17 @@ void setup_wifi(){
 }
 
 void setup_ntp(void){
-    timeClient.begin();
-    NTP_ok = true;
+    if(WiFi_ok){
+        IPAddress res;
+        if(!WiFi.hostByName("pool.ntp.org", res)){
+            NTP_ok = false;
+            return;
+        }
+        timeClient.begin();
+        NTP_ok = true;
+        return;
+    }
+    NTP_ok = false;
 }
 
 void setup_rtc(void){
@@ -2834,7 +2873,12 @@ void setup() {
 
     if(WiFi_ok){
         setup_ntp();
-        sys_log(LOG_INFO, "NTP connected");
+        if(NTP_ok){
+            sys_log(LOG_INFO, "NTP connected");
+        }
+        else{
+            sys_log(LOG_WARNING, "NTP is not availble from this network.");
+        }
     }
     if(WiFi_ok && NTP_ok && RTC_ok){
         sync_RTC_from_NTP();
@@ -2865,7 +2909,7 @@ void setup() {
         sys_log(LOG_ERROR, "External ADC not working, system is unable to move.");
     }
     cleanup_syslog();
-    system_checks();
+    //system_checks();
 }
 
 void loop() {

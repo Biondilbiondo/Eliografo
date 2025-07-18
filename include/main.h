@@ -12,6 +12,7 @@
 // Real Time Clock
 #include <ESP32Time.h>
 #include "RTClib.h"
+#define DS1307_ADDRESS 0x68 
 // SolTrack
 #include <SolTrack.h>
 // Math Lib
@@ -99,5 +100,7 @@ void alt_motor_enable(void);
 float read_azi_encoder(void);
 float read_alt_encoder(void);
 
+void set_pid_goto(float, float);
+void pid_loop(void);
 bool run_sequence(uint8_t *scenes_seq, uint8_t sequence_len, float run_timestamp);
 void sys_log(uint8_t type, const char *format, ...);
