@@ -873,16 +873,32 @@ bool is_sun_above_horizon(void){
 }
 
 // Motors and Encoders Routine
+static inline uint8_t _sigmoidal(uint16_t voltage, uint16_t minVoltage, uint16_t maxVoltage) {
+	// slow
+	// uint8_t result = 110 - (110 / (1 + pow(1.468 * (voltage - minVoltage)/(maxVoltage - minVoltage), 6)));
+
+	// steep
+	// uint8_t result = 102 - (102 / (1 + pow(1.621 * (voltage - minVoltage)/(maxVoltage - minVoltage), 8.1)));
+
+	// normal
+    telnet.printf("%d %d %d\n", voltage, minVoltage, maxVoltage);
+	uint8_t result = 105 - (105 / (1 + pow(1.724 * (voltage - minVoltage)/(maxVoltage - minVoltage), 5.5)));
+    telnet.printf("%d\n", result);
+	return result >= 100 ? 100 : result;
+}
+
 float read_battery_charge(void){
     float f_v = 0.0;
     if(!external_ADC_ok) return -1.0;
     for(int i=0; i < encoder_oversampling; i++){
-        f_v += external_adc.computeVolts(external_adc.readADC_SingleEnded(2)) * BATTERY_VOLTAGE_DIVIDER_FAC;
+        f_v += external_adc.computeVolts(external_adc.readADC_SingleEnded(2));
         if(i != encoder_oversampling-1) delay(1);
     }
 
     f_v /= encoder_oversampling;
-    return sigmoidal(f_v*1000., BATTERY_MIN_mV, BATTERY_MAX_mV);
+    telnet.printf("Raw V: %f Bat V: %f\n", f_v,  f_v * BATTERY_VOLTAGE_DIVIDER_FAC);
+    f_v *= BATTERY_VOLTAGE_DIVIDER_FAC;
+    return (float) _sigmoidal(int16_t (f_v*1000.), BATTERY_MIN_mV, BATTERY_MAX_mV);
 }
 
 void motor_driver_enable(void){
