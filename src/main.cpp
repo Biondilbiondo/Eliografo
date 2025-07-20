@@ -58,6 +58,7 @@ float azi_motor_max_angular_speed;
 float alt_motor_max_angular_speed;
 float alt_encoder_volt_to_deg, azi_encoder_volt_to_deg;
 uint32_t encoder_oversampling = ENCODER_OVERSAMPLING;
+float alt_scene_accel = 30, azi_scene_accel = 30;
 
 float sleep_alt, sleep_azi;
 
@@ -665,6 +666,11 @@ float get_float_default_cfg(const char *k){
         return DEFAULT_SLEEP_AZI;
     if(strcmp(k, "altnap") == 0)
         return DEFAULT_SLEEP_ALT;
+    if(strcmp(k, "alt_sca") == 0)
+        return DEFAULT_ALT_SCENE_ACCEL;
+    if(strcmp(k, "azi_sca") == 0)
+        return DEFAULT_AZI_SCENE_ACCEL;
+
 
     return 0.0;
 }
@@ -770,6 +776,8 @@ void configurations_log(void){
     telnet.printf("%-35s %d\n", "WAKEUP_TIME_BEFORE_SCHEDULE_S", WAKEUP_TIME_BEFORE_SCHEDULE_S);
     telnet.printf("%-35s %d\n", "WIFI_WATCHDOG_TIME", WIFI_WATCHDOG_TIME);
     telnet.printf("%-35s %d\n", "PWM_MAX_VALUE", PWM_MAX_VALUE);
+    telnet.printf("%-35s %d\n", "SCENE_DT", SCENE_DT);
+
 
     telnet.printf("%-35s %f\n", "ATM_PRESSURE", ATM_PRESSURE);
     telnet.printf("%-35s %f\n", "ATM_TEMPERATURE", ATM_TEMPERATURE);
@@ -797,6 +805,8 @@ void configurations_log(void){
     telnet.printf("%-35s %f\n", "SPEED_TO_PWM_AZI", get_float_cfg("azi_s2p"));
     telnet.printf("%-35s %f\n", "SLEEP_ALT", get_float_cfg("altnap"));
     telnet.printf("%-35s %f\n", "SLEEP_AZI", get_float_cfg("azinap"));
+    telnet.printf("%-35s %f\n", "ALT_SCENE_ACCEL", get_float_cfg("alt_sca"));
+    telnet.printf("%-35s %f\n", "AZI_SCENE_ACCEL", get_float_cfg("azi_sca"));
     return;
 }
 
@@ -1111,6 +1121,56 @@ int8_t compute_speed(float dangle, float dt, float min, float max, float gain, f
     return (int8_t) speed;
 }
 
+int8_t compute_speed_accel(float dangle, float dt, float min, float max, float gain, float pwm_min, 
+                           float initial_speed, float final_speed, float step_dt, float accel){
+/* 
+Trapezioidal speed profile
+b = -dt*a -vi -vf
+ c = (vi*vi+vf*vf)/2 + da*a
+ 
+ delta = b*b - 4*c
+ vt1 = (-b + delta**.5)/2
+ vt2 = (-b -  delta**.5)/2
+ 
+ vt = vt2
+ 
+ ta = (vt - vi) / a
+ tb = (vt - vf) / a
+ */
+    telnet.printf("Dangle %f DT %f CS %f FS %f\n", dangle, dt, initial_speed, final_speed);
+    float b = -dt * accel - initial_speed - final_speed;
+    float c = (initial_speed*initial_speed+final_speed*final_speed) / 2.0 + dangle * accel;
+    float delta = b*b - 4. * c;
+    float target_speed = (-b - sqrt(delta)) / 2.0;
+
+    float ta = (target_speed - initial_speed) /  accel;
+    float tb = dt - (target_speed - final_speed) / accel;
+
+    telnet.printf("Target speed %f, ta %f, tb %f\n", target_speed, ta, tb);
+
+    float ang_speed;
+    if(step_dt/2 > ta && step_dt/2 < tb){
+        ang_speed = target_speed;
+    }
+    if(step_dt/2 < ta){
+        ang_speed = initial_speed + accel * step_dt/2;
+    }
+    if(step_dt/2 > tb){
+        ang_speed = target_speed - accel * (step_dt/2-tb);
+    }
+
+    float speed;
+    if(ang_speed > 0)
+        speed = (pwm_min + 1e3 * ang_speed * gain);
+    else
+        speed = (-pwm_min + 1e3 * ang_speed * gain);
+
+    if(speed > max) speed = max;
+    if(speed < min) speed = min;
+
+    return (int8_t) speed;
+}
+
 float compute_angle_delta(float a1, float a2){
     float delta;
     delta = a1 - a2;
@@ -1331,6 +1391,8 @@ bool run_scene(uint8_t sn, float run_timestamp=-1., float alt_0=0., float azi_0=
 // ENABLE JUST FOR DEBUG POURPOSE!
 //#define DEBUG_VERBOSE_SCENE
 //#define DEBUG_USE_ABSOLUTE_INSTEAD_OF_SOLAR
+//#define USE_ACCELERATED_MOTION
+#define SCENE_LOOP_DT 150
 
     current_timestamp = get_timestamp_RTC();
 #ifdef DEBUG_VERBOSE_SCENE
@@ -1374,23 +1436,51 @@ bool run_scene(uint8_t sn, float run_timestamp=-1., float alt_0=0., float azi_0=
     
     int i = 0;
     next = now;
+#ifdef USE_ACCELERATED_MOTION
+    float current_speed = 0;
+    float last_alt, last_azi, last_t;
+    float alt_current_speed=0, azi_current_speed=0;
+    float alt_final_speed=0, azi_final_speed=0;
+#endif
 
     while(i < scene_len[sn]){
+#ifdef USE_ACCELERATED_MOTION
+        last_alt = alt_encoder_val;
+        last_azi = azi_encoder_val;
+        last_t = now;
+#endif
+
         t0 = millis();
         alt_encoder_val = read_alt_encoder();
         azi_encoder_val = read_azi_encoder();
-        
+
         delta_alt = compute_angle_delta(alt_setpoint, alt_encoder_val);
         delta_azi = compute_angle_delta(azi_setpoint, azi_encoder_val);
 
         now = millis();
         dt = next-now;
+#ifdef USE_ACCELERATED_MOTION 
+        if(i > 0){
+            alt_current_speed = compute_angle_delta(alt_encoder_val, last_alt) / (now - last_t);
+            azi_current_speed = compute_angle_delta(azi_encoder_val, last_azi) / (now - last_t);
+        }
+#endif
         if(dt > 100){
-            
+#ifndef USE_ACCELERATED_MOTION            
             alt_speed_i = compute_speed(delta_alt, dt, alt_min_speed, alt_max_speed, 
                                         angular_speed_to_pwm_alt, (float) pwm_min_alt);
             azi_speed_i = compute_speed(delta_azi, dt, azi_min_speed, 
                                         azi_max_speed, angular_speed_to_pwm_azi, (float) pwm_min_azi);
+#else
+            alt_speed_i = compute_speed_accel(delta_alt, dt, -PWM_MAX_VALUE, PWM_MAX_VALUE, angular_speed_to_pwm_alt, 
+                                              (float) pwm_min_alt, alt_current_speed, alt_final_speed, 
+                                              SCENE_DT, alt_scene_accel);
+            azi_speed_i = compute_speed_accel(delta_azi, dt, -PWM_MAX_VALUE, PWM_MAX_VALUE, angular_speed_to_pwm_azi, 
+                                              (float) pwm_min_azi, azi_current_speed, azi_final_speed, 
+                                              SCENE_DT, azi_scene_accel);
+            
+#endif 
+
 #ifdef DEBUG_VERBOSE_SCENE
             telnet.printf("dt = %d\n", dt);
             telnet.printf("alt %f azi %f \n", delta_alt, delta_azi);
@@ -1400,7 +1490,7 @@ bool run_scene(uint8_t sn, float run_timestamp=-1., float alt_0=0., float azi_0=
             set_alt_motor_speed(alt_speed_i);
             set_azi_motor_speed(azi_speed_i);
             // Delay in such a way that it last at least 150ms
-            delay(150 - millis() + t0);
+            delay(SCENE_LOOP_DT - millis() + t0);
         }
 
         if(now >= next){
@@ -1420,7 +1510,7 @@ bool run_scene(uint8_t sn, float run_timestamp=-1., float alt_0=0., float azi_0=
                 sys_log(LOG_ERROR, "Scene interrupted because ADC went off!");
                 return false;
             }
-
+#ifndef USE_ACCELERATED_MOTION
             alt_target_speed = compute_speed(compute_angle_delta(alt_setpoint, alt_encoder_val), 
                                              SCENE_DT, 
                                              -PWM_MAX_VALUE, PWM_MAX_VALUE,
@@ -1446,6 +1536,7 @@ bool run_scene(uint8_t sn, float run_timestamp=-1., float alt_0=0., float azi_0=
                                           SCENE_DT,
                                           -PWM_MAX_VALUE, PWM_MAX_VALUE,
                                           angular_speed_to_pwm_azi, (float) pwm_min_azi);
+
 #ifdef DEBUG_VERBOSE_SCENE
             telnet.printf("ALT %d %d %d\n", alt_min_speed, alt_target_speed, alt_max_speed);
             telnet.printf("AZI %d %d %d\n", azi_min_speed, azi_target_speed, azi_max_speed);
@@ -1453,6 +1544,29 @@ bool run_scene(uint8_t sn, float run_timestamp=-1., float alt_0=0., float azi_0=
             
             set_alt_motor_speed(alt_target_speed);
             set_azi_motor_speed(azi_target_speed);
+#else
+            if(i < scene_len[sn] - 1){
+                alt_final_speed = compute_angle_delta(scenes[sn][i*2]+alt_0, scenes[sn][i*2+2]+alt_0) / SCENE_DT;
+                azi_final_speed = compute_angle_delta(scenes[sn][i*2+1]+alt_0, scenes[sn][i*2+3]+alt_0) / SCENE_DT;
+            }
+            else{
+                alt_final_speed = 0;
+                azi_final_speed = 0;
+            }
+            telnet.printf("ALT: CS %f FS %f\n", alt_current_speed, alt_final_speed);
+            telnet.printf("AZI: CS %f FS %f\n", azi_current_speed, azi_final_speed);
+            
+            alt_speed_i = compute_speed_accel(compute_angle_delta(alt_setpoint, alt_encoder_val), SCENE_DT,  
+                                             -PWM_MAX_VALUE, PWM_MAX_VALUE, angular_speed_to_pwm_alt, 
+                                              (float) pwm_min_alt, alt_current_speed, alt_final_speed, 
+                                              SCENE_DT, alt_scene_accel);
+            azi_speed_i = compute_speed_accel(delta_azi, dt, -PWM_MAX_VALUE, PWM_MAX_VALUE, angular_speed_to_pwm_azi, 
+                                              (float) pwm_min_azi, azi_current_speed, azi_final_speed, 
+                                              SCENE_DT, azi_scene_accel);
+            
+            set_alt_motor_speed(alt_speed_i);
+            set_azi_motor_speed(azi_speed_i);
+#endif
 
             now = millis();
             next = scene_beg + SCENE_DT * (i+1);
@@ -2707,6 +2821,9 @@ void setup_motors(){
     angular_speed_to_pwm_azi = get_float_cfg("azi_s2p");
     pwm_min_alt = get_int_cfg("alt_mPWM");
     pwm_min_azi = get_int_cfg("azi_mPWM");
+
+    alt_scene_accel = get_float_cfg("alt_sca");
+    azi_scene_accel = get_float_cfg("azi_sca");
 
     encoder_oversampling = get_int_cfg("overs");
 

@@ -62,9 +62,6 @@
 #define WIFI_TASK 1
 #define SEQUENCE_TASK 2
 
-//in ms
-#define SCENE_DT 500
-
 
 
 void setup_wifi();
