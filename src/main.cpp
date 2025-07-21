@@ -160,7 +160,7 @@ uint32_t get_datestamp(void){
     uint8_t minutes;
     float seconds;
     get_time(&year, &month, &day, &hours, &minutes, &seconds);
-    return days_since_epoch(year, month, day);
+    return days_since_epoch((uint32_t) year, (uint32_t) month, (uint32_t) day);
 }
 
 
@@ -621,6 +621,7 @@ void schedule_task_loop(void){
             continue;
         }
 
+        //telnet.printf("%d %d %d\n", i, sch_datestamp[i], datestamp);
         if(abs(timestamp - (float) sch_timestamp[i]) < SCHEDULE_TIME_DELTA && (sch_datestamp[i] == 0 || sch_datestamp[i] == datestamp)){
             /*telnet.print("Running daily task\n");
             telnet.printf("%02d at %02d:%02d:%02d\n", i, hours, minutes, (int) seconds);*/
@@ -664,31 +665,33 @@ float seconds_to_next_schedule(void){
     float next_schedule = -1, dt;
     int dd;
 
+    //telnet.printf("NOW ds %d ts %f\n", datestamp, timestamp);
     for(int i=0; i<task_cnt; i++){
-        dt = sch_timestamp[i] - timestamp;
+
+        //telnet.printf("Schedule %d date %d time %d\n", i, sch_datestamp[i], sch_timestamp[i]);
+        dt = (float) sch_timestamp[i] - timestamp;
+        dd = (int) sch_datestamp[i] - (int) datestamp;
         
-        if(sch_datestamp[i] != 0){
-            dd = sch_datestamp[i] - datestamp;
+        if(dd != -datestamp){
             if(dd < 0){
                 // This is passed and is not going to come back
                 continue;
             }
-            if(dt > 0){
-                dt += SECONDS_PER_DAY * dd;
-            }
-            else{
-                if(dd == 0){
-                    // This was today but already passed and is not going to come back
+            if(dd == 0){
+                if(dt < 0) 
                     continue;
-                }
-                dt = sch_timestamp[i] + (SECONDS_PER_DAY - timestamp);
+                // else dt is already ok
+            }
+            if(dd > 0){
+                dt = (float) sch_timestamp[i] + (SECONDS_PER_DAY - timestamp);
                 if(dd > 1) dt += SECONDS_PER_DAY * (dd-1);
             }
 
         }
         else{
-            if(dt < 0) dt = sch_timestamp[i] + (SECONDS_PER_DAY - timestamp);
+            if(dt < 0) dt = (float) sch_timestamp[i] + (SECONDS_PER_DAY - timestamp);
         }
+        telnet.printf("Schedule %d dt %f\n", i, dt);
         if(next_schedule < 0 || dt < next_schedule) next_schedule = dt;
     }
     return next_schedule;
@@ -2418,7 +2421,7 @@ bool cmd_add_sequence_schedule(char *buf){
     if(month != 0 && (month < 1 || month > 12) ) return false;
 
     tok = strtok(NULL, " ");
-    sscanf(tok, "%d", &s);
+    sscanf(tok, "%d", &d);
     if(d != 0 && (d < 1 || d > 31)) return false;
 
 
