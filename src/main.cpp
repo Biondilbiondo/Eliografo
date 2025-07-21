@@ -621,10 +621,7 @@ void schedule_task_loop(void){
             continue;
         }
 
-        //telnet.printf("%d %d %d\n", i, sch_datestamp[i], datestamp);
         if(abs(timestamp - (float) sch_timestamp[i]) < SCHEDULE_TIME_DELTA && (sch_datestamp[i] == 0 || sch_datestamp[i] == datestamp)){
-            /*telnet.print("Running daily task\n");
-            telnet.printf("%02d at %02d:%02d:%02d\n", i, hours, minutes, (int) seconds);*/
             if(sch_type[i] == WIFI_TASK){
                 sys_log(LOG_INFO, "WiFi turned on by task number %d", i);
                 sys_log(LOG_DEBUG, "Timestamp %f schedule timestamp %f", timestamp, (float) sch_timestamp[i]);
@@ -665,10 +662,7 @@ float seconds_to_next_schedule(void){
     float next_schedule = -1, dt;
     int dd;
 
-    //telnet.printf("NOW ds %d ts %f\n", datestamp, timestamp);
     for(int i=0; i<task_cnt; i++){
-
-        //telnet.printf("Schedule %d date %d time %d\n", i, sch_datestamp[i], sch_timestamp[i]);
         dt = (float) sch_timestamp[i] - timestamp;
         dd = (int) sch_datestamp[i] - (int) datestamp;
         
@@ -691,7 +685,6 @@ float seconds_to_next_schedule(void){
         else{
             if(dt < 0) dt = (float) sch_timestamp[i] + (SECONDS_PER_DAY - timestamp);
         }
-        telnet.printf("Schedule %d dt %f\n", i, dt);
         if(next_schedule < 0 || dt < next_schedule) next_schedule = dt;
     }
     return next_schedule;
