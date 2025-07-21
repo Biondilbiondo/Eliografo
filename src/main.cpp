@@ -34,6 +34,7 @@ bool external_ADC_ok = false;
 Preferences HGPrefs; 
 
 // Daily Tasks
+uint32_t sch_datestamp[MAX_DAILY_TASKS] = {0};
 uint64_t sch_timestamp[MAX_DAILY_TASKS];
 bool sch_run[MAX_DAILY_TASKS] = {false};
 uint8_t sch_type[MAX_DAILY_TASKS] = {NO_TASK};
@@ -84,6 +85,28 @@ uint32_t log_level = 0;
 int32_t log_delete_after_days = 0;
 
 // Time/RTC Routines
+ uint32_t days_since_epoch(uint32_t year, uint32_t month, uint32_t day){
+     int y = (int) year, m = (int) month, d = (int) day;
+     int jd = ( 1461 * ( y + 4800 + ( m - 14 ) / 12 ) ) / 4 +
+                   ( 367 * ( m - 2 - 12 * ( ( m - 14 ) / 12 ) ) ) / 12 -
+                   ( 3 * ( ( y + 4900 + ( m - 14 ) / 12 ) / 100 ) ) / 4 +
+                   d - 32075;
+     return (uint32_t) jd;
+ }
+ 
+ void dse_to_ymd(uint32_t jd, uint32_t *y, uint32_t *m, uint32_t *d){
+         int l = (int) jd + 68569;
+         int n = ( 4 * l ) / 146097;
+         l = l - ( 146097 * n + 3 ) / 4;
+         int i = ( 4000 * ( l + 1 ) ) / 1461001;
+         l = l - ( 1461 * i ) / 4 + 31;
+         int j = ( 80 * l ) / 2447;
+         *d = (uint32_t) (l - ( 2447 * j ) / 80);
+         l = j / 11;
+         *m = (uint32_t) (j + 2 - ( 12 * l ));
+         *y = (uint32_t) (100 * ( n - 49 ) + i + l);
+ }
+
 void update_time_from_NTP(void){
     while(!timeClient.update()) {
         timeClient.forceUpdate();
@@ -128,6 +151,18 @@ float get_timestamp(void){
     float timestamp = (float) hours * 3600. + (float) minutes * 60. + seconds;
     return timestamp;
 }
+
+uint32_t get_datestamp(void){
+    uint16_t year;
+    uint8_t month;
+    uint8_t day;
+    uint8_t hours;
+    uint8_t minutes;
+    float seconds;
+    get_time(&year, &month, &day, &hours, &minutes, &seconds);
+    return days_since_epoch(year, month, day);
+}
+
 
 float get_timestamp_RTC(void){
     return (float) internal_rtc.getHour(true) * 3600. + (float) internal_rtc.getMinute() * 60 + internal_rtc.getSecond() + internal_rtc.getMicros() / 1e6;
@@ -218,14 +253,6 @@ void get_time(uint16_t *year, uint8_t *month, uint8_t *day, uint8_t *hours, uint
     *day = 1;
     *month = 1;
     *year = 1970;
-}
-
-uint32_t days_since_epoch(int year, int month, int day){
-    uint16_t a = (14 - month) / 12;
-    uint16_t y = year + 4800 - a;
-    uint16_t m = month + 12 * a - 3;
-    uint32_t days = day + ((153ul * m + 2) / 5) + (365ul * y) + (y / 4ul) - (y / 100ul) + y / 400ul - 32045ul - 1721426ul;
-    return days;
 }
 
 bool check_time(void){
@@ -449,9 +476,10 @@ bool delete_wifi_credentials(int c){
 }
 
 // Scheduled tasks
-bool add_scheduled_task_wifi(uint32_t h, uint32_t m, uint32_t s){
+bool add_scheduled_task_wifi(uint32_t h, uint32_t m, uint32_t s, uint32_t datestamp=0){
 
     if(task_cnt < MAX_DAILY_TASKS){
+        sch_datestamp[task_cnt] =  datestamp;
         sch_timestamp[task_cnt] = h * 3600 + m * 60 + s;
         sch_type[task_cnt] = WIFI_TASK;
         task_cnt++;
@@ -460,8 +488,9 @@ bool add_scheduled_task_wifi(uint32_t h, uint32_t m, uint32_t s){
     return false;
 }
 
-bool add_scheduled_task_sequence(uint32_t h, uint32_t m, uint32_t s, uint8_t *seq, uint8_t seq_len){
+bool add_scheduled_task_sequence(uint32_t h, uint32_t m, uint32_t s, uint8_t *seq, uint8_t seq_len, uint32_t datestamp=0){
     if(task_cnt < MAX_DAILY_TASKS){
+        sch_datestamp[task_cnt] = datestamp;
         sch_timestamp[task_cnt] = h * 3600 + m * 60 + s - SAFETY_TIME_BEFORE_SEQUENCE;
         sch_type[task_cnt] = SEQUENCE_TASK;
         for(int i=0; i < seq_len && i < MAX_SCENES_IN_SEQUENCE; i++){
@@ -478,6 +507,7 @@ bool delete_schedule(uint16_t s){
     if(s >= task_cnt) return false;
     for(int i=s+1; i < task_cnt; i++){
         sch_timestamp[i-1] = sch_timestamp[i];
+        sch_datestamp[i-1] = sch_datestamp[i];
         sch_type[i-1] = sch_type[i];
         for(int j=0; j < MAX_SCENES_IN_SEQUENCE; j++){
             sch_sequence[i-1][j] = sch_sequence[i][j];
@@ -502,13 +532,29 @@ bool load_schedule_from_file(const char *path){
     }
 
     int i = 0;
-    uint32_t h, m, sec;
+    uint32_t h, m, sec, y, month, d, datestamp;
     uint8_t type;
 
     while(file.available()){
         s = file.readStringUntil('\n');
         strcpy(cs, s.c_str());
+        
         tok = strtok(cs, " ");
+        if(tok[0] == '*'){
+            datestamp = 0;
+            tok = strtok(NULL, " ");
+            tok = strtok(NULL, " ");
+        }
+        else{
+            sscanf(tok, "%d", &y);
+            tok = strtok(NULL, " ");
+            sscanf(tok, "%d", &month);
+            tok = strtok(NULL, " ");
+            sscanf(tok, "%d", &d);
+            datestamp = days_since_epoch(y, month, d);
+        }
+
+        tok = strtok(NULL, " ");
         sscanf(tok, "%d", &h);
         tok = strtok(NULL, " ");
         sscanf(tok, "%d", &m);
@@ -519,7 +565,7 @@ bool load_schedule_from_file(const char *path){
         sscanf(tok, "%d", &m);
         if(strcmp(tok, "wifi") == 0){
             type = WIFI_TASK;
-            add_scheduled_task_wifi(h, m, sec);
+            add_scheduled_task_wifi(h, m, sec, datestamp);
             sys_log(LOG_DEBUG, "Added wifi task at %02d:%02d:%02d", h, m, sec);
         }
         else if(strcmp(tok, "sequence") == 0){
@@ -547,7 +593,7 @@ bool load_schedule_from_file(const char *path){
                 next_scene_name = strtok(NULL, " ");
             }
             if(!error){
-                add_scheduled_task_sequence(h, m, sec, myseq, seq_len);
+                add_scheduled_task_sequence(h, m, sec, myseq, seq_len, datestamp);
                 sys_log(LOG_DEBUG, "Added sequence task at %02d:%02d:%02d (it will be scheduled %d'%d\" before)", 
                         h, m, sec, (int) SAFETY_TIME_BEFORE_SEQUENCE/60, (int) SAFETY_TIME_BEFORE_SEQUENCE%60 );
             }
@@ -563,6 +609,8 @@ bool load_schedule_from_file(const char *path){
 
 void schedule_task_loop(void){
     float timestamp = get_timestamp();
+    uint32_t datestamp = get_datestamp();
+
     bool was_on_wifi = false;
 
     for(int i=0; i<task_cnt; i++){
@@ -573,18 +621,21 @@ void schedule_task_loop(void){
             continue;
         }
 
-        if(abs(timestamp - (float) sch_timestamp[i]) < SCHEDULE_TIME_DELTA){
+        if(abs(timestamp - (float) sch_timestamp[i]) < SCHEDULE_TIME_DELTA && (sch_datestamp[i] == 0 || sch_datestamp[i] == datestamp)){
             /*telnet.print("Running daily task\n");
             telnet.printf("%02d at %02d:%02d:%02d\n", i, hours, minutes, (int) seconds);*/
             if(sch_type[i] == WIFI_TASK){
                 sys_log(LOG_INFO, "WiFi turned on by task number %d", i);
                 sys_log(LOG_DEBUG, "Timestamp %f schedule timestamp %f", timestamp, (float) sch_timestamp[i]);
+                sys_log(LOG_DEBUG, "Datestamp %d schedule datestamp %d", datestamp, sch_datestamp[i]);
                 wifi_on();
                 wifi_watchdog_0 = millis();
             }
             if(sch_type[i] == SEQUENCE_TASK){
                 sys_log(LOG_INFO, "Starting sequence task %d right now", i);
                 sys_log(LOG_DEBUG, "Timestamp %f schedule timestamp %f", timestamp, (float) sch_timestamp[i]);
+                sys_log(LOG_DEBUG, "Datestamp %d schedule datestamp %d", datestamp, sch_datestamp[i]);
+
                 if(WiFi_ok){
                     if(telnet.isConnected()){
                         telnet.printf("Sorry but a sequence is starting right now, you can reconnect at the end.\n");
@@ -608,20 +659,36 @@ void schedule_task_loop(void){
 }
 
 float seconds_to_next_schedule(void){
-    uint16_t year;
-    uint8_t month;
-    uint8_t day;
-    uint8_t hours;
-    uint8_t minutes;
-    float seconds;
-
-    get_time(&year, &month, &day, &hours, &minutes, &seconds);
-    float timestamp = hours * 3600 + minutes * 60 + seconds;
+    float timestamp = get_timestamp();
+    uint32_t datestamp = get_datestamp();
     float next_schedule = -1, dt;
+    int dd;
 
     for(int i=0; i<task_cnt; i++){
         dt = sch_timestamp[i] - timestamp;
-        if(dt < 0) dt = sch_timestamp[i] + (SECONDS_PER_DAY - timestamp);
+        
+        if(sch_datestamp[i] != 0){
+            dd = sch_datestamp[i] - datestamp;
+            if(dd < 0){
+                // This is passed and is not going to come back
+                continue;
+            }
+            if(dt > 0){
+                dt += SECONDS_PER_DAY * dd;
+            }
+            else{
+                if(dd == 0){
+                    // This was today but already passed and is not going to come back
+                    continue;
+                }
+                dt = sch_timestamp[i] + (SECONDS_PER_DAY - timestamp);
+                if(dd > 1) dt += SECONDS_PER_DAY * (dd-1);
+            }
+
+        }
+        else{
+            if(dt < 0) dt = sch_timestamp[i] + (SECONDS_PER_DAY - timestamp);
+        }
         if(next_schedule < 0 || dt < next_schedule) next_schedule = dt;
     }
     return next_schedule;
@@ -670,6 +737,8 @@ float get_float_default_cfg(const char *k){
         return DEFAULT_ALT_SCENE_ACCEL;
     if(strcmp(k, "azi_sca") == 0)
         return DEFAULT_AZI_SCENE_ACCEL;
+    if(strcmp(k, "minbl") == 0)
+        return DEFAULT_MIN_BATTERY_LEVEL;
 
 
     return 0.0;
@@ -734,7 +803,7 @@ bool set_float_cfg(const char *key, float val){
 
 int32_t get_int_cfg(const char *k){
     if(!cfg_key_exists(k))
-        HGPrefs.putLong(k, get_float_default_cfg(k));
+        HGPrefs.putLong(k, get_int_default_cfg(k));
     return HGPrefs.getLong(k);
 }
 
@@ -789,6 +858,7 @@ void configurations_log(void){
     telnet.printf("%-35s %f\n", "MIN_ALLOWED_SPEED", MIN_ALLOWED_SPEED);
     telnet.printf("%-35s %f\n", "WATCHDOG_TIME_FACTOR", WATCHDOG_TIME_FACTOR);
     
+    telnet.printf("%-35s %f\n", "MIN_BATTERY_LEVEL", get_float_cfg("minbl"));
     telnet.printf("%-35s %f\n", "ALT_ENCODER_ZERO", get_float_cfg("alte0"));
     telnet.printf("%-35s %f\n", "ALT_KP", get_float_cfg("alt_kp"));
     telnet.printf("%-35s %f\n", "ALT_MIN_E", get_float_cfg("alt_me"));
@@ -2315,12 +2385,19 @@ bool cmd_test_scene(char *buf){
 }
 
 bool cmd_add_wifi_schedule(char *buf){
-    uint32_t h, m, s;
-    sscanf(buf, "%d %d %d", &h, &m, &s);
+    uint32_t h, m, s, y, month, d;
+
+    sscanf(buf, "%d %d %d %d %d %d", &y, &month, &d, &h, &m, &s);
     if(h < 0 || h > 23) return false;
     if(m < 0 || m > 59) return false;
     if(s < 0 || s > 59) return false;
-    add_scheduled_task_wifi(h, m, s);
+    if(y != 0 && y < 2000) return false;
+    if(month != 0 && (month < 1 || month > 12) ) return false;
+    if(d != 0 && (d < 1 || d > 31)) return false;
+    if(y == 0 || d == 0 || month == 0)
+        add_scheduled_task_wifi(h, m, s);
+    else
+        add_scheduled_task_wifi(h, m, s, days_since_epoch(y, month, d));
     return true;
 }
 
@@ -2329,9 +2406,23 @@ bool cmd_add_sequence_schedule(char *buf){
     uint8_t seq_len = 0;
     char *next_scene_name, *tok;
     bool error = false;
-    uint32_t h, m, s;
+    uint32_t h, m, s, d, month, y;
 
     tok = strtok(buf, " ");
+    sscanf(tok, "%d", &y);
+    if(y != 0 && y < 2000) return false;
+
+
+    tok = strtok(NULL, " ");
+    sscanf(tok, "%d", &month);
+    if(month != 0 && (month < 1 || month > 12) ) return false;
+
+    tok = strtok(NULL, " ");
+    sscanf(tok, "%d", &s);
+    if(d != 0 && (d < 1 || d > 31)) return false;
+
+
+    tok = strtok(NULL, " ");
     sscanf(tok, "%d", &h);
     if(h < 0 || h > 23) return false;
     tok = strtok(NULL, " ");
@@ -2359,7 +2450,10 @@ bool cmd_add_sequence_schedule(char *buf){
         next_scene_name = strtok(NULL, " ");
     }
     if(!error){
-        add_scheduled_task_sequence(h, m, s, myseq, seq_len);
+        if(y == 0 || d == 0 || month == 0)
+            add_scheduled_task_sequence(h, m, s, myseq, seq_len);
+        else
+            add_scheduled_task_sequence(h, m, s, myseq, seq_len, days_since_epoch(y, month, d));
         sys_log(LOG_INFO, "Added sequence task at %02d:%02d:%02d (it will be scheduled %d'%d\" before)", 
                 h, m, s, (int) SAFETY_TIME_BEFORE_SEQUENCE/60, (int) SAFETY_TIME_BEFORE_SEQUENCE%60 );
     }
@@ -2367,17 +2461,24 @@ bool cmd_add_sequence_schedule(char *buf){
 }
 
 bool cmd_print_schedule(void){
-    uint32_t h, m, s;
+    uint32_t h, m, s, y, month, d;
 
     for(int i=0; i<task_cnt; i++){
         uint64_t timestamp = sch_timestamp[i];
+        uint32_t datestamp = sch_datestamp[i];
         if(sch_type[i] == SEQUENCE_TASK) timestamp += SAFETY_TIME_BEFORE_SEQUENCE;
 
         h = timestamp / 3600;
         m = (timestamp - 3600 * h) / 60;
         s = (timestamp - 3600 * h) % 60;
+        dse_to_ymd(datestamp, &y, &month, &d);
 
-        telnet.printf("[%d] %02d:%02d:%02d ", i, h, m, s);
+        if(datestamp == 0){
+            telnet.printf("[%d] *    *  *  %02d:%02d:%02d ", i, h, m, s);
+        }
+        else{
+            telnet.printf("[%d] %04d %02d %02d %02d:%02d:%02d ", i, y, month, d, h, m, s);
+        }
 
         if(sch_type[i] == WIFI_TASK){
             telnet.printf("wifi\n");
@@ -2393,7 +2494,7 @@ bool cmd_print_schedule(void){
 }
 
 bool cmd_save_current_schedule(void){
-    uint32_t h, m, s;
+    uint32_t h, m, s, d, month, y;
 
     File file = LittleFS.open("/schedules/show.sch", FILE_WRITE);
     if(!file){
@@ -2406,13 +2507,21 @@ bool cmd_save_current_schedule(void){
         if(sch_type[i] != SEQUENCE_TASK) continue;
         
         uint64_t timestamp = sch_timestamp[i];
+        uint32_t datestamp = sch_datestamp[i];
         timestamp += SAFETY_TIME_BEFORE_SEQUENCE;
 
         h = timestamp / 3600;
         m = (timestamp - 3600 * h) / 60;
         s = (timestamp - 3600 * h) % 60;
+        dse_to_ymd(datestamp, &y, &month, &d);
 
-        file.printf("%02d %02d %02d sequence", h, m, s);
+
+        if(datestamp == 0){
+            file.printf("*    *  *  %02d %02d %02d sequence", h, m, s);
+        }
+        else{
+            file.printf("%04d %02d %02d %02d %02d %02d sequence", y, month, d, h, m, s);
+        }
         for(int j=0; j < sch_sequence_len[i]; j++)
             file.printf(" %s", scenes_name[sch_sequence[i][j]].c_str());
         file.printf("\n");
@@ -2429,12 +2538,20 @@ bool cmd_save_current_schedule(void){
     for(int i=0; i<task_cnt; i++){
         if(sch_type[i] != WIFI_TASK) continue;
         uint64_t timestamp = sch_timestamp[i];
+        uint32_t datestamp = sch_datestamp[i];
 
         h = timestamp / 3600;
         m = (timestamp - 3600 * h) / 60;
         s = (timestamp - 3600 * h) % 60;
+        dse_to_ymd(datestamp, &y, &month, &d);
 
-        file.printf("%02d %02d %02d wifi\n", h, m, s);
+
+        if(datestamp == 0){
+            file.printf("*    *  *  %02d %02d %02d wifi\n", h, m, s);
+        }
+        else{
+            file.printf("%04d %02d %02d %02d %02d %02d wifi\n", y, month, d, h, m, s);
+        }
     }    
     file.close();
     return true;
@@ -2967,6 +3084,7 @@ void setup() {
     current_lon = get_float_cfg("lon");
     current_lat = get_float_cfg("lat");
     sys_log(LOG_INFO, "My Position is LON %.3f LAT %.3f", current_lon, current_lat);
+
     load_wifi_credentials_from_file("/wifi_net.txt");
     load_scenes_from_file();
     load_schedule_from_file("/schedules/show.sch");
@@ -3015,12 +3133,20 @@ void setup() {
 
     setup_adc();
     if(external_ADC_ok) pid_control_reset();
+    
+    float battery_level = read_battery_charge();
+    sys_log(LOG_INFO, "Battery charge is %.1f", battery_level);
+    float min_battery_level = get_float_cfg("minbl");
+    if(battery_level < min_battery_level && battery_level > 0.){
+        sys_log(LOG_ERROR, "Battery charge is %.1f (limit to run is %.1f). Going to sleep.", battery_level, min_battery_level);
+        sleep_for_seconds(MAX_SLEEP_S);
+    }
 
     set_int_cfg("bootn", 1 + bootn);
 
     if(!check_time()){
-        sys_log(LOG_ERROR, "No time information is available. Sleeping until I now what time is it.");
-        sleep_for_seconds(MAX_SLEEP_S);
+        sys_log(LOG_ERROR, "No time information is available. Keeping wifi on for debug.");
+        //sleep_for_seconds(MAX_SLEEP_S);
     }
     if(!external_ADC_ok){
         sys_log(LOG_ERROR, "External ADC not working, system is unable to move.");
